@@ -1,0 +1,18 @@
+{
+  "@microsoft/generator-sharepoint": {
+    "plusBeta": false,
+    "isCreatingSolution": true,
+    "nodeVersion": "22.19.0",
+    "sdksVersions": {},
+    "version": "1.21.1",
+    "libraryName": "cenco-grilla-proveedores",
+    "libraryId": "99da1a23-ce06-467c-83ae-288a7e2d94e7",
+    "environment": "spo",
+    "packageManager": "npm",
+    "solutionName": "CENCO_grilla_proveedores",
+    "solutionShortDescription": "CENCO_grilla_proveedores description",
+    "skipFeatureDeployment": true,
+    "isDomainIsolated": false,
+    "componentType": "webpart"
+  }
+}

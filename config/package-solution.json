@@ -1,0 +1,40 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/spfx-build/package-solution.schema.json",
+  "solution": {
+    "name": "cenco-grilla-proveedores-client-side-solution",
+    "id": "99da1a23-ce06-467c-83ae-288a7e2d94e7",
+    "version": "2.0.0.0",
+    "includeClientSideAssets": true,
+    "skipFeatureDeployment": false,
+    "isDomainIsolated": false,
+    "developer": {
+      "name": "",
+      "websiteUrl": "",
+      "privacyUrl": "",
+      "termsOfUseUrl": "",
+      "mpnId": "Undefined-1.21.1"
+    },
+    "metadata": {
+      "shortDescription": {
+        "default": "CENCO_grilla_proveedores description"
+      },
+      "longDescription": {
+        "default": "CENCO_grilla_proveedores description"
+      },
+      "screenshotPaths": [],
+      "videoUrl": "",
+      "categories": []
+    },
+    "features": [
+      {
+        "title": "cenco-grilla-proveedores Feature",
+        "description": "The feature that activates elements of the cenco-grilla-proveedores solution.",
+        "id": "c7db6119-a564-421d-8ee0-2d65fce7566c",
+        "version": "1.0.0.0"
+      }
+    ]
+  },
+  "paths": {
+    "zippedPackage": "solution/cenco-grilla-proveedores.sppkg"
+  }
+}

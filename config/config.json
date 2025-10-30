@@ -1,0 +1,18 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/spfx-build/config.2.0.schema.json",
+  "version": "2.0",
+  "bundles": {
+    "cenco-pdp-grilla-prov-vehiculos-web-part": {
+      "components": [
+        {
+          "entrypoint": "./lib/webparts/cencoPdpGrillaProvVehiculos/CencoPdpGrillaProvVehiculosWebPart.js",
+          "manifest": "./src/webparts/cencoPdpGrillaProvVehiculos/CencoPdpGrillaProvVehiculosWebPart.manifest.json"
+        }
+      ]
+    }
+  },
+  "externals": {},
+  "localizedResources": {
+    "CencoPdpGrillaProvVehiculosWebPartStrings": "lib/webparts/cencoPdpGrillaProvVehiculos/loc/{locale}.js"
+  }
+}

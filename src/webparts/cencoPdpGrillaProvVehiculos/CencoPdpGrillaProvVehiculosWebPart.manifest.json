@@ -1,0 +1,28 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/spfx/client-side-web-part-manifest.schema.json",
+  "id": "c02f1e26-2b7e-4453-863d-7223de6ec095",
+  "alias": "CencoPdpGrillaProvVehiculosWebPart",
+  "componentType": "WebPart",
+
+  "version": "*",
+  "manifestVersion": 2,
+
+  "requiresCustomScript": false,
+  "supportedHosts": ["SharePointWebPart", "TeamsPersonalApp", "TeamsTab", "SharePointFullPage"],
+  "supportsThemeVariants": true,
+
+  "preconfiguredEntries": [{
+    "groupId": "5c03119e-3074-46fd-976b-c60198311f70", 
+    "group": { "default": "Advanced" },
+    "title": { "default": "Grilla inteligente" },
+    "description": { "default": "CENCO_PDP_Grilla_Prov_Vehiculos description" },
+    "officeFabricIconFontName": "Page",
+    "properties": {
+      "description": "WP para gentionar items con edicion rápida",
+      "showAdd": true,
+      "showEdit": true,
+      "showDelete": true,
+      "showToggle": true
+    }
+  }]
+}
