@@ -5,7 +5,6 @@ import {
   createTheme,
   Stack,
   CommandBar,
-  ICommandBarItemProps,
   SearchBox,
   DetailsList,
   ShimmeredDetailsList,
@@ -18,8 +17,6 @@ import {
   ConstrainMode,
   SelectionMode,
   IconButton,
-  PrimaryButton,
-  DefaultButton,
   TextField,
   Dropdown,
   IDropdownOption,
@@ -27,7 +24,7 @@ import {
   Modal,
 } from "@fluentui/react";
 import { mergeStyles, mergeStyleSets } from "@fluentui/react/lib/Styling";
-import { IVehiculosService } from "../services/IVehiculosService";
+import { IVehiculosService, EditField } from "../services/IVehiculosService";
 import { Vehiculo } from "../models/types";
 import { useVehiculosGrid } from "../hooks/useVehiculosGrid";
 
@@ -171,28 +168,8 @@ const VehiculosGrid: React.FC<Props> = ({
 }) => {
   const [dynCols, setDynCols] = React.useState<IColumn[] | null>(null);
   const [dynItems, setDynItems] = React.useState<any[] | null>(null);
-
-  const loadDynamic = React.useCallback(async () => {
-    if (!viewId) {
-      setDynCols(null);
-      setDynItems(null);
-      return;
-    }
-    const res = await service.getViewGrid(viewId, toggleField);
-    const cols: IColumn[] = res.columns.map((c) => ({
-      key: c.key,
-      name: c.name,
-      fieldName: c.fieldName,
-      minWidth: c.minWidth ?? 100,
-      isResizable: c.isResizable ?? true,
-    }));
-    setDynCols(cols);
-    setDynItems(res.items);
-  }, [service, viewId, toggleField]);
-
-  React.useEffect(() => {
-    void loadDynamic();
-  }, [loadDynamic]);
+  const [dynSchema, setDynSchema] = React.useState<Record<string, EditField>>({});
+  const [dynLookupOpts, setDynLookupOpts] = React.useState<Record<string, IDropdownOption[]>>({});
 
   const {
     s,
@@ -207,11 +184,75 @@ const VehiculosGrid: React.FC<Props> = ({
     refresh,
   } = useVehiculosGrid(service, groupNameForEdit, viewId, toggleField);
 
+  const loadDynamic = React.useCallback(async () => {
+    if (!viewId) {
+      setDynCols(null);
+      setDynItems(null);
+      setDynSchema({});
+      setDynLookupOpts({});
+      return;
+    }
+
+    const res = await service.getViewGrid(viewId, toggleField);
+    const cols: IColumn[] = res.columns.map((c) => ({
+      key: c.key,
+      name: c.name,
+      fieldName: c.fieldName,
+      minWidth: c.minWidth ?? 100,
+      isResizable: c.isResizable ?? true,
+    }));
+    setDynCols(cols);
+    setDynItems(res.items);
+
+    const fieldNames = res.columns.map((c) => c.fieldName || c.key);
+    const metas = await service.getFieldsMeta(fieldNames);
+
+    const schemaMap: Record<string, EditField> = {};
+    metas.forEach((m) => {
+      schemaMap[m.internalName] = m;
+    });
+    setDynSchema(schemaMap);
+
+    const lookupEntries = await Promise.all(
+      metas
+        .filter((m) => (m.type === "Lookup" || m.type === "User") && m.lookupListId)
+        .map(async (m) => {
+          const opts = await service.getLookupOptionsByListId(m.lookupListId!);
+          const asDropdown: IDropdownOption[] = opts.map((o) => ({ key: o.key, text: o.text }));
+          return [m.internalName, asDropdown] as [string, IDropdownOption[]];
+        })
+    );
+    const lookupMap: Record<string, IDropdownOption[]> = {};
+    lookupEntries.forEach(([name, opts]) => {
+      lookupMap[name] = opts;
+    });
+    setDynLookupOpts(lookupMap);
+  }, [service, viewId, toggleField]);
+
+  React.useEffect(() => {
+    void loadDynamic();
+  }, [loadDynamic]);
+
   const { headerClass, listWrapper, classes, headerStyles, modalHeader, modalBody } = useStyles();
   const width = useWindowW();
   const isMobile = width < 640;
 
   const [query, setQuery] = React.useState("");
+  const [cfg, setCfg] = React.useState<Record<string, { dateField: string; warnDays: number }>>({});
+
+  React.useEffect(() => {
+    if (!enableSemaforo || !service.getTipoFormularioConfig) return;
+    let alive = true;
+    service
+      .getTipoFormularioConfig(tipoConfigListTitle, tipoConfigKeyField)
+      .then((m) => {
+        if (alive) setCfg(m || {});
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [enableSemaforo, service, tipoConfigListTitle, tipoConfigKeyField]);
 
   const stringify = (v: unknown): string => {
     if (v == null) return "";
@@ -247,23 +288,6 @@ const VehiculosGrid: React.FC<Props> = ({
     });
   }, [dynItems, s.items, query]);
 
-  const [cfg, setCfg] = React.useState<Record<string, { dateField: string; warnDays: number }>>({});
-
-  React.useEffect(() => {
-    if (!enableSemaforo || !service.getTipoFormularioConfig) return;
-    let alive = true;
-    service
-      .getTipoFormularioConfig(tipoConfigListTitle, tipoConfigKeyField)
-      .then((m) => {
-        if (alive) setCfg(m || {});
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [enableSemaforo, service, tipoConfigListTitle, tipoConfigKeyField]);
-
-  // Helpers para ocultar ID en el modal
   const filterOutIdCols = React.useCallback(
     (cols: IColumn[]) =>
       cols.filter((c) => {
@@ -273,7 +297,6 @@ const VehiculosGrid: React.FC<Props> = ({
     []
   );
 
-  // Modal de relacionados
   const [relOpen, setRelOpen] = React.useState(false);
   const [relBusy, setRelBusy] = React.useState(false);
   const [relCols, setRelCols] = React.useState<IColumn[]>([]);
@@ -329,11 +352,13 @@ const VehiculosGrid: React.FC<Props> = ({
     [service, relatedListId, relatedParentField, relatedChildField, relatedChildViewId, filterOutIdCols]
   );
 
-  const proveedorText = (v: Vehiculo): string => {
+  const proveedorText = (v: any): string => {
     if (v.proveedorTitles && v.proveedorTitles.length) return v.proveedorTitles.join(", ");
     const opts = (s.meta?.provOptions || []) as IDropdownOption[];
-    const hit = opts.filter((o) => v.proveedorIds.indexOf(Number(o.key)) !== -1);
-    return hit.map((o) => String(o.text || "")).join(", ");
+    const hit = (v.proveedorIds || [])
+      .map((id: number) => opts.find((o) => Number(o.key) === id)?.text)
+      .filter(Boolean);
+    return hit.join(", ");
   };
 
   const csvEscape = (v: unknown): string => {
@@ -350,7 +375,7 @@ const VehiculosGrid: React.FC<Props> = ({
       return { headers, rows };
     }
     const headers = ["Placa", "Proveedor", "Marca", "Modelo", ...(toggleField ? ["Activo"] : [])];
-    const rows = s.items.map((v: Vehiculo) => {
+    const rows = s.items.map((v: any) => {
       const fila: (string | number | boolean)[] = [v.placa || "", proveedorText(v), v.marca || "", v.modelo || ""];
       if (toggleField) fila.push(!!v.toggle ? "Sí" : "No");
       return fila;
@@ -402,6 +427,11 @@ const VehiculosGrid: React.FC<Props> = ({
     );
   };
 
+  const getRowId = (it: any): number | undefined => {
+    if (!it) return undefined;
+    return it.id ?? it.Id ?? it.ID ?? it.ItemId ?? it["ID_x0020_"] ?? it["Id_x0020_"];
+  };
+
   const baseColsOnly: IColumn[] = [
     {
       key: "placa",
@@ -409,12 +439,15 @@ const VehiculosGrid: React.FC<Props> = ({
       minWidth: 100,
       maxWidth: isMobile ? 120 : 160,
       isResizable: true,
-      onRender: (it?: Vehiculo) =>
-        !it ? null : s.editingId === it.id ? (
+      onRender: (it?: any) => {
+        if (!it) return null;
+        const isEditing = s.editingId === getRowId(it);
+        return isEditing ? (
           <TextField value={s.draft?.placa || ""} onChange={(_, v) => updateDraft({ placa: v || "" })} />
         ) : (
           <span>{it.placa}</span>
-        ),
+        );
+      },
     },
     {
       key: "proveedor",
@@ -422,8 +455,10 @@ const VehiculosGrid: React.FC<Props> = ({
       minWidth: 160,
       maxWidth: isMobile ? 220 : 300,
       isResizable: true,
-      onRender: (it?: Vehiculo) =>
-        !it ? null : s.editingId === it.id ? (
+      onRender: (it?: any) => {
+        if (!it) return null;
+        const isEditing = s.editingId === getRowId(it);
+        return isEditing ? (
           <Dropdown
             placeholder="Seleccione…"
             options={(s.meta?.provOptions || []) as IDropdownOption[]}
@@ -434,33 +469,8 @@ const VehiculosGrid: React.FC<Props> = ({
           />
         ) : (
           <span title={proveedorText(it)}>{proveedorText(it)}</span>
-        ),
-    },
-    {
-      key: "marca",
-      name: "Marca",
-      minWidth: 90,
-      maxWidth: 140,
-      isResizable: true,
-      onRender: (it?: Vehiculo) =>
-        !it ? null : s.editingId === it.id ? (
-          <TextField value={s.draft?.marca || ""} onChange={(_, v) => updateDraft({ marca: v || "" })} />
-        ) : (
-          <span>{it.marca}</span>
-        ),
-    },
-    {
-      key: "modelo",
-      name: "Modelo",
-      minWidth: 90,
-      maxWidth: 160,
-      isResizable: true,
-      onRender: (it?: Vehiculo) =>
-        !it ? null : s.editingId === it.id ? (
-          <TextField value={s.draft?.modelo || ""} onChange={(_, v) => updateDraft({ modelo: v || "" })} />
-        ) : (
-          <span>{it.modelo}</span>
-        ),
+        );
+      },
     },
   ];
 
@@ -470,115 +480,299 @@ const VehiculosGrid: React.FC<Props> = ({
       name: "Activo",
       minWidth: 70,
       maxWidth: 90,
-      onRender: (it?: Vehiculo) => (!it ? null : <span>{it.toggle ? "Sí" : "No"}</span>),
+      onRender: (it?: any) => (!it ? null : <span>{it.toggle ? "Sí" : "No"}</span>),
     });
   }
+
+  // ⬇⬇⬇ AQUÍ el cambio importante
+  const editableDynCols: IColumn[] | null = React.useMemo(() => {
+    if (!dynCols) return null;
+
+    return dynCols.map((c) => {
+      const fieldName = c.fieldName || c.key;
+
+      return {
+        ...c,
+        onRender: (it?: any) => {
+          if (!it) return null;
+          const rowId = getRowId(it);
+          const isEditing = s.editingId === rowId;
+          const rawVal = it[fieldName as keyof typeof it];
+          const meta = dynSchema[fieldName];
+
+          // ======== LECTURA ========
+          if (!isEditing) {
+            // boolean
+            if (meta?.type === "Boolean") {
+              const b =
+                rawVal === true ||
+                rawVal === 1 ||
+                rawVal === "1" ||
+                rawVal === "true" ||
+                rawVal === "TRUE";
+              return <span>{b ? "Sí" : "No"}</span>;
+            }
+
+            // lookup / user
+            if (meta && (meta.type === "Lookup" || meta.type === "User")) {
+              const opts = dynLookupOpts[fieldName];
+              let display: string | undefined;
+
+              // 1) si vino como objeto con Title
+              if (rawVal && typeof rawVal === "object" && "Title" in rawVal) {
+                display = String((rawVal as any).Title || "");
+              }
+
+              // 2) si vino directamente como texto (porque ya lo resolviste en el service)
+              if (!display && (typeof rawVal === "string" || typeof rawVal === "number")) {
+                display = String(rawVal);
+              }
+
+              // 3) si no vino nada en el campo "limpio", probamos con los típicos ...Id
+              if (!display && opts && opts.length) {
+                const idCandidates = [
+                  it[`${fieldName}Id`],
+                  it[`${fieldName}_Id`],
+                  it[`${fieldName}ID`],
+                ];
+                const first = idCandidates.find((x) => x !== undefined && x !== null);
+                if (Array.isArray(first)) {
+                  const texts = first
+                    .map((id: any) => {
+                      const hit = opts.find((o) => Number(o.key) === Number(id));
+                      return hit ? hit.text : undefined;
+                    })
+                    .filter(Boolean)
+                    .join(", ");
+                  display = texts;
+                } else if (first !== undefined && first !== null) {
+                  const hit = opts.find((o) => Number(o.key) === Number(first));
+                  display = hit ? hit.text : String(first);
+                }
+              }
+
+              return <span>{display ?? ""}</span>;
+            }
+
+            // multichoice
+            if (meta?.type === "MultiChoice") {
+              return <span>{Array.isArray(rawVal) ? rawVal.join(", ") : ""}</span>;
+            }
+
+            if (Array.isArray(rawVal)) return <span>{rawVal.map((x: any) => x?.Title ?? x ?? "").join(", ")}</span>;
+            if (rawVal && typeof rawVal === "object") return <span>{String((rawVal as any).Title ?? stringify(rawVal))}</span>;
+            return <span>{rawVal ?? ""}</span>;
+          }
+
+          // ======== EDICIÓN ========
+          if (meta) {
+            const t = meta.type;
+
+            if (t === "Boolean") {
+              const current =
+                (s.draft as any)?.[fieldName] ??
+                (rawVal === true ||
+                  rawVal === 1 ||
+                  rawVal === "1" ||
+                  rawVal === "true" ||
+                  rawVal === "TRUE");
+              return (
+                <Dropdown
+                  options={[
+                    { key: "true", text: "Sí" },
+                    { key: "false", text: "No" },
+                  ]}
+                  selectedKey={current ? "true" : "false"}
+                  onChange={(_, opt) => updateDraft({ [fieldName]: opt?.key === "true" } as any)}
+                />
+              );
+            }
+
+            if (t === "Choice" && meta.choices && meta.choices.length) {
+              const opts: IDropdownOption[] = meta.choices.map((ch: string) => ({ key: ch, text: ch }));
+              const current =
+                (s.draft as any)?.[fieldName] ??
+                (rawVal && typeof rawVal === "object" && "Title" in rawVal
+                  ? (rawVal as any).Title
+                  : rawVal ?? "");
+              return (
+                <Dropdown
+                  options={opts}
+                  selectedKey={current ? String(current) : undefined}
+                  onChange={(_, opt) => updateDraft({ [fieldName]: opt ? String(opt.key) : "" } as any)}
+                />
+              );
+            }
+
+            if (t === "MultiChoice" && meta.choices && meta.choices.length) {
+              const opts: IDropdownOption[] = meta.choices.map((ch: string) => ({ key: ch, text: ch }));
+              const current: string[] =
+                (s.draft as any)?.[fieldName] ?? (Array.isArray(rawVal) ? (rawVal as string[]) : []);
+              return (
+                <Dropdown
+                  multiSelect
+                  options={opts}
+                  selectedKeys={current}
+                  onChange={(_, opt) => {
+                    const key = String(opt!.key);
+                    const prev: string[] =
+                      (s.draft as any)?.[fieldName]
+                        ? ((s.draft as any)[fieldName] as string[]).slice()
+                        : Array.isArray(rawVal)
+                        ? (rawVal as string[]).slice()
+                        : [];
+                    const idx = prev.indexOf(key);
+                    if (opt?.selected) {
+                      if (idx === -1) prev.push(key);
+                    } else {
+                      if (idx !== -1) prev.splice(idx, 1);
+                    }
+                    updateDraft({ [fieldName]: prev } as any);
+                  }}
+                />
+              );
+            }
+
+            if ((t === "Lookup" || t === "User") && meta.lookupListId) {
+              const opts = dynLookupOpts[fieldName] || [];
+              const currentDraft = (s.draft as any)?.[fieldName];
+
+              // 👇 tratar de obtener un id también desde los ...Id del item
+              const idCandidates = [
+                currentDraft,
+                rawVal,
+                it[`${fieldName}Id`],
+                it[`${fieldName}_Id`],
+                it[`${fieldName}ID`],
+              ];
+              let selectedKey: number | string | undefined;
+              for (const cand of idCandidates) {
+                if (typeof cand === "number" || typeof cand === "string") {
+                  selectedKey = cand;
+                  break;
+                }
+                if (cand && typeof cand === "object" && "Title" in cand) {
+                  const hit = opts.find((o) => o.text === (cand as any).Title);
+                  if (hit) {
+                    selectedKey = hit.key;
+                    break;
+                  }
+                }
+              }
+
+              return (
+                <Dropdown
+                  options={opts}
+                  selectedKey={selectedKey}
+                  onChange={(_, opt) => updateDraft({ [fieldName]: opt ? opt.key : null } as any)}
+                />
+              );
+            }
+
+            if (t === "Number" || t === "Currency") {
+              return (
+                <TextField
+                  type="number"
+                  value={
+                    (s.draft as any)?.[fieldName] != null
+                      ? String((s.draft as any)[fieldName])
+                      : rawVal != null
+                      ? String(rawVal)
+                      : ""
+                  }
+                  onChange={(_, v) => updateDraft({ [fieldName]: v } as any)}
+                />
+              );
+            }
+
+            if (t === "DateTime") {
+              return (
+                <TextField
+                  type="date"
+                  value={
+                    (s.draft as any)?.[fieldName]
+                      ? String((s.draft as any)[fieldName]).substring(0, 10)
+                      : rawVal
+                      ? String(rawVal).substring(0, 10)
+                      : ""
+                  }
+                  onChange={(_, v) => updateDraft({ [fieldName]: v } as any)}
+                />
+              );
+            }
+          }
+
+          return (
+            <TextField
+              value={(s.draft as any)?.[fieldName] ?? (rawVal != null ? String(rawVal) : "")}
+              onChange={(_, v) => updateDraft({ [fieldName]: v || "" } as any)}
+            />
+          );
+        },
+      };
+    });
+  }, [dynCols, dynSchema, dynLookupOpts, s.editingId, s.draft, updateDraft]);
 
   const colActions: IColumn = {
     key: "acciones",
     name: "Acciones",
-    minWidth: isMobile ? 220 : 320,
-    onRender: (it?: any) =>
-      !it ? null : s.canEdit ? (
-        dynItems ? (
-          <Stack horizontal tokens={{ childrenGap: 4 }}>
-            {relatedListId && relatedParentField && relatedChildField && (
-              <IconButton
-                iconProps={{ iconName: "FileTemplate" }}
-                title="Documentos relacionados"
-                onClick={(ev) => {
-                  ev.preventDefault();
-                  ev.stopPropagation();
-                  openRelated(it).catch(() => {});
-                }}
-              />
-            )}
-          </Stack>
-        ) : s.editingId === (it as Vehiculo).id ? (
-          <Stack horizontal tokens={{ childrenGap: 8 }}>
-            <PrimaryButton
-              text="Confirmar"
-              onClick={(ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                confirm().catch(() => {});
-              }}
-              disabled={s.saving}
+    minWidth: 140,
+    onRender: (it?: any) => {
+      if (!it) return null;
+      const thisId = getRowId(it);
+      const isEditing = s.editingId === thisId;
+      const real = s.items.find((row: any) => getRowId(row) === thisId) as Vehiculo | undefined;
+      return isEditing ? (
+        <Stack horizontal tokens={{ childrenGap: 4 }}>
+          <IconButton iconProps={{ iconName: "CheckMark" }} title="Confirmar" onClick={() => confirm().catch(() => {})} disabled={s.saving} />
+          <IconButton iconProps={{ iconName: "Cancel" }} title="Cancelar" onClick={() => cancel()} disabled={s.saving} />
+        </Stack>
+      ) : (
+        <Stack horizontal tokens={{ childrenGap: 4 }}>
+          {showEdit && (
+            <IconButton iconProps={{ iconName: "Edit" }} title="Editar" onClick={() => enterEdit(real || it)} />
+          )}
+          {showDelete && real && (
+            <IconButton iconProps={{ iconName: "Delete" }} title="Borrar" onClick={() => remove(real.id).catch(() => {})} />
+          )}
+          {toggleField && showToggle && real && (
+            <IconButton
+              iconProps={{ iconName: real.toggle ? "CircleStop" : "Play" }}
+              title={real.toggle ? "Desactivar" : "Activar"}
+              onClick={() => toggleActive(real).catch(() => {})}
             />
-            <DefaultButton
-              text="Cancelar"
-              onClick={(ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                cancel();
-              }}
-              disabled={s.saving}
+          )}
+          {relatedListId && relatedParentField && relatedChildField && (
+            <IconButton
+              iconProps={{ iconName: "FileTemplate" }}
+              title="Documentos relacionados"
+              onClick={() => openRelated(it).catch(() => {})}
             />
-          </Stack>
-        ) : (
-          <Stack horizontal tokens={{ childrenGap: 4 }}>
-            {toggleField && showToggle && (
-              <IconButton
-                iconProps={{ iconName: (it as Vehiculo).toggle ? "CircleStop" : "Play" }}
-                title={(it as Vehiculo).toggle ? "Desactivar" : "Activar"}
-                onClick={(ev) => {
-                  ev.preventDefault();
-                  ev.stopPropagation();
-                  toggleActive(it as Vehiculo).catch(() => {});
-                }}
-              />
-            )}
-            {showEdit && (
-              <IconButton
-                iconProps={{ iconName: "Edit" }}
-                title="Editar"
-                onClick={(ev) => {
-                  ev.preventDefault();
-                  ev.stopPropagation();
-                  enterEdit(it as Vehiculo);
-                }}
-              />
-            )}
-            {showDelete && (
-              <IconButton
-                iconProps={{ iconName: "Delete" }}
-                title="Borrar"
-                onClick={(ev) => {
-                  ev.preventDefault();
-                  ev.stopPropagation();
-                  remove((it as Vehiculo).id).catch(() => {});
-                }}
-              />
-            )}
-            {relatedListId && relatedParentField && relatedChildField && (
-              <IconButton
-                iconProps={{ iconName: "FileTemplate" }}
-                title="Documentos relacionados"
-                onClick={(ev) => {
-                  ev.preventDefault();
-                  ev.stopPropagation();
-                  openRelated(it).catch(() => {});
-                }}
-              />
-            )}
-          </Stack>
-        )
-      ) : null,
+          )}
+        </Stack>
+      );
+    },
   };
 
   const columnsSem = enableSemaforo
     ? [
-        { key: "semaforo", name: "Estado", minWidth: 140, onRender: (it?: any) => (it ? renderSemaforo(it) : null) } as IColumn,
-        ...(dynItems ? dynCols || [] : baseColsOnly),
+        {
+          key: "semaforo",
+          name: "Estado",
+          minWidth: 140,
+          onRender: (it?: any) => (it ? renderSemaforo(it) : null),
+        } as IColumn,
+        ...(editableDynCols ? editableDynCols : baseColsOnly),
       ]
-    : dynItems
-    ? dynCols || []
+    : editableDynCols
+    ? editableDynCols
     : baseColsOnly;
 
-  const columns = s.canEdit ? [...columnsSem, colActions] : columnsSem;
+  const columns: IColumn[] = [...columnsSem, colActions];
 
   const canAdd = s.canEdit && showAdd && !dynItems;
-  const cmdItems: ICommandBarItemProps[] = [
+
+  const cmdItems = [
     ...(canAdd
       ? [
           {
@@ -587,28 +781,38 @@ const VehiculosGrid: React.FC<Props> = ({
             iconProps: { iconName: "Add" },
             disabled: s.editingId !== undefined,
             onClick: () => addNew(),
-          } as ICommandBarItemProps,
+          } as const,
         ]
       : []),
-    { key: "export", text: "Exportar", iconProps: { iconName: "ExcelDocument" }, onClick: exportToCsv },
+    {
+      key: "export",
+      text: "Exportar",
+      iconProps: { iconName: "ExcelDocument" },
+      onClick: () => exportToCsv(),
+    },
     {
       key: "refresh",
       text: "Refrescar",
       iconProps: { iconName: "Refresh" },
-      onClick: async () => {
-        await refresh();
-        await loadDynamic();
+      onClick: () => {
+        refresh().catch(() => {});
+        loadDynamic().catch(() => {});
       },
     },
   ];
 
   const onRenderRow = (rowProps?: any) => {
     if (!rowProps) return null;
-    const customStyles: Partial<IDetailsRowStyles> = { root: { selectors: { "&:hover": { background: "#f0f7ff !important" } } } };
+    const customStyles: Partial<IDetailsRowStyles> = {
+      root: { selectors: { "&:hover": { background: "#f0f7ff !important" } } },
+    };
     return <DetailsRow {...rowProps} styles={customStyles} className={classes.zebraRow} />;
   };
 
-  const onRenderDetailsHeader = (props?: IDetailsHeaderProps, defaultRender?: IRenderFunction<IDetailsHeaderProps>) => {
+  const onRenderDetailsHeader = (
+    props?: IDetailsHeaderProps,
+    defaultRender?: IRenderFunction<IDetailsHeaderProps>
+  ) => {
     if (!props || !defaultRender) return null;
     const mergedProps: IDetailsHeaderProps = { ...props, styles: { ...props.styles, ...headerStyles } };
     return <div className={headerClass}>{defaultRender(mergedProps)}</div>;
@@ -653,6 +857,7 @@ const VehiculosGrid: React.FC<Props> = ({
               dynItems
                 ? (item?: any, _i?: number, col?: IColumn) => {
                     if (!item || !col) return null;
+                    if (col.onRender) return col.onRender(item, _i, col);
                     const v = item[col.fieldName!];
                     if (v == null) return "";
                     if (Array.isArray(v)) return v.map((x) => (x?.Title ?? x ?? "")).join(", ");
@@ -664,7 +869,6 @@ const VehiculosGrid: React.FC<Props> = ({
           />
         </div>
 
-        {/* Modal Documentos Relacionados (ocultando ID) */}
         <Modal
           isOpen={relOpen}
           onDismiss={() => setRelOpen(false)}

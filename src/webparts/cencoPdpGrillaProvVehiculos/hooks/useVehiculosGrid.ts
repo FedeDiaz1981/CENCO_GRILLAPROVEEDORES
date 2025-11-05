@@ -16,7 +16,7 @@ type HookReturn = {
   s: State;
   setS: React.Dispatch<React.SetStateAction<State>>;
   refresh: () => Promise<void>;
-  enterEdit: (v: Vehiculo) => void;
+  enterEdit: (v: Vehiculo | any) => void;
   addNew: () => void;
   cancel: () => void;
   confirm: () => Promise<void>;
@@ -58,19 +58,33 @@ export function useVehiculosGrid(
     setS((x) => ({ ...x, draft: { ...(x.draft || { placa: "" }), ...patch } }));
   };
 
-  const enterEdit = (v: Vehiculo): void => {
-    if (!s.canEdit || s.editingId !== undefined) return;
+  /** Helper para normalizar ID */
+  const getRowId = (v: any): number | undefined => {
+    return v?.id ?? v?.Id ?? v?.ID;
+  };
+
+  /** ✅ versión corregida y simplificada */
+  const enterEdit = (v: Vehiculo | any): void => {
+    console.log("Edit");
+    const id = getRowId(v);
+    if (id == null) return;
+
+    // ya estás editando la misma fila → no hagas nada
+    if (s.editingId === id) return;
+
+    // buscar el item real en memoria
+    const base = s.items.find((it) => getRowId(it) === id) as Vehiculo | undefined;
     const multi = !!s.meta?.provMulti;
+    const provIds = base?.proveedorIds ? base.proveedorIds.slice() : [];
+
     setS((x) => ({
       ...x,
-      editingId: v.id,
+      editingId: id,
       draft: {
-        placa: v.placa || "",
-        marca: v.marca,
-        modelo: v.modelo,
-        proveedorId: multi
-          ? v.proveedorIds.slice()
-          : (v.proveedorIds[0] as number | undefined),
+        placa: base?.placa || v?.placa || v?.Title || "",
+        marca: base?.marca || v?.marca,
+        modelo: base?.modelo || v?.modelo,
+        proveedorId: multi ? provIds : provIds[0],
       },
     }));
   };
@@ -119,6 +133,7 @@ export function useVehiculosGrid(
       await refresh();
       setS((x) => ({ ...x, editingId: undefined, draft: undefined }));
     } catch {
+      // podrías loguear el error si querés
     }
     setS((x) => ({ ...x, saving: false }));
   };

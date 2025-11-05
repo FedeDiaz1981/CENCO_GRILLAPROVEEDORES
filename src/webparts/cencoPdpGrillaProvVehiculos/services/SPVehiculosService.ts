@@ -92,10 +92,11 @@ export class SPVehiculosService implements IVehiculosService {
     return rows || [];
   }
 
+  // 👇 AHORA devuelve también listId
   public async getViewGrid(
     viewId: string,
     boolField?: string
-  ): Promise<{ columns: GridColumn[]; items: any[] }> {
+  ): Promise<{ columns: GridColumn[]; items: any[]; listId: string }> {
     const names = (await this.getViewFieldNames(viewId)).map(normalizeViewName);
     const metas = await this.getFieldsMeta(names);
 
@@ -109,7 +110,9 @@ export class SPVehiculosService implements IVehiculosService {
 
     let items = await this.listRawByView(viewId, boolField);
     items = await this.resolveLookupTexts(items, metas);
-    return { columns, items };
+
+    // 👈 devolvemos la lista base que ya tiene este service
+    return { columns, items, listId: this.listId! };
   }
 
   public async list(viewId?: string, boolField?: string): Promise<Vehiculo[]> {
@@ -379,13 +382,32 @@ export class SPVehiculosService implements IVehiculosService {
       .map((l) => ({ id: String(l.Id), title: String(l.Title) }));
   }
 
+  // 👇 la enriquecemos para que traiga todo lo que necesitamos
   public async getListFields(listId: string): Promise<FieldRef[]> {
     const fields = await this.sp.web.lists
       .getById(listId)
-      .fields.select("InternalName", "Title", "TypeAsString", "Hidden", "ReadOnlyField", "Sealed")();
+      .fields.select(
+        "InternalName",
+        "Title",
+        "TypeAsString",
+        "Hidden",
+        "ReadOnlyField",
+        "Sealed",
+        "Choices",
+        "LookupList",
+        "AllowMultipleValues"
+      )();
     return (fields as any[])
       .filter((f: any) => !f.Hidden && !f.Sealed)
-      .map((f: any) => ({ internalName: f.InternalName, title: f.Title, type: f.TypeAsString }));
+      .map((f: any) => ({
+        internalName: f.InternalName,
+        title: f.Title,
+        type: f.TypeAsString,
+        choices: f.Choices,
+        lookupListId: f.LookupList,
+        allowMultiple: f.AllowMultipleValues,
+        readOnly: f.ReadOnlyField,
+      }));
   }
 
   public async getRelatedItems(params: {
@@ -575,7 +597,8 @@ export class SPVehiculosService implements IVehiculosService {
             break;
           }
         }
-        if (m.allowMultiple) (r as any)[m.internalName] = ids.map((id) => mapIds.get(id) ?? String(id));
+        if (m.allowMultiple)
+          (r as any)[m.internalName] = ids.map((id) => mapIds.get(id) ?? String(id));
         else {
           const id = ids[0];
           (r as any)[m.internalName] = id != null ? mapIds.get(id) ?? String(id) : undefined;

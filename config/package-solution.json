@@ -3,7 +3,7 @@
   "solution": {
     "name": "cenco-grilla-proveedores-client-side-solution",
     "id": "99da1a23-ce06-467c-83ae-288a7e2d94e7",
-    "version": "2.0.0.0",
+    "version": "3.0.0.0",
     "includeClientSideAssets": true,
     "skipFeatureDeployment": false,
     "isDomainIsolated": false,
