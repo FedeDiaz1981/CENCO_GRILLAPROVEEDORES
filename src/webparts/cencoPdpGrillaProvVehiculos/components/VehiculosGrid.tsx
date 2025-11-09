@@ -166,6 +166,8 @@ type Props = {
   relatedChildField?: string;
   relatedChildViewId?: string;
   relatedEditViewId?: string;
+  /** nuevo: toggle de la webpart para permitir edición de documentos relacionados */
+  allowRelatedEdit?: boolean;
 };
 
 const VehiculosGrid: React.FC<Props> = ({
@@ -188,6 +190,7 @@ const VehiculosGrid: React.FC<Props> = ({
   relatedChildField,
   relatedChildViewId,
   relatedEditViewId,
+  allowRelatedEdit = false, // por defecto no dejamos editar
 }) => {
   const [dynCols, setDynCols] = React.useState<IColumn[] | null>(null);
   const [dynItems, setDynItems] = React.useState<any[] | null>(null);
@@ -432,6 +435,8 @@ const VehiculosGrid: React.FC<Props> = ({
 
   const openRelatedEdit = React.useCallback(
     async (item: any) => {
+      // si la webpart no tiene habilitada la edición, no abrimos
+      if (!allowRelatedEdit) return;
       if (!relEditListId || !relatedEditViewId) return;
       const itemId = item.Id ?? item.ID ?? item.id;
       if (!itemId) return;
@@ -503,7 +508,7 @@ const VehiculosGrid: React.FC<Props> = ({
         setRelEditLoading(false);
       }
     },
-    [relEditListId, relatedEditViewId, service]
+    [allowRelatedEdit, relEditListId, relatedEditViewId, service]
   );
 
   const proveedorText = (v: any): string => {
@@ -1173,9 +1178,9 @@ const VehiculosGrid: React.FC<Props> = ({
                     {
                       key: "relActions",
                       name: "Acciones",
-                      minWidth: 90,
+                      minWidth: allowRelatedEdit ? 90 : 0,
                       onRender: (it?: any) =>
-                        it ? (
+                        it && allowRelatedEdit ? (
                           <IconButton
                             iconProps={{ iconName: "Edit" }}
                             title="Editar"

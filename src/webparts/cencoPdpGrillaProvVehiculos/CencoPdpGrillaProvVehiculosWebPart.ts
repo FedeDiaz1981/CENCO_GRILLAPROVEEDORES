@@ -42,8 +42,10 @@ export interface ICencoPdpGrillaProvVehiculosWebPartProps {
   relatedParentField?: string;
   relatedChildField?: string;
   relatedChildViewId?: string;
-  // 👉 NUEVO: vista de edición del hijo
   relatedEditViewId?: string;
+
+  // NUEVO: prender/apagar edición en documentos relacionados
+  allowRelatedEdit?: boolean;
 }
 
 export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWebPart<ICencoPdpGrillaProvVehiculosWebPartProps> {
@@ -81,8 +83,10 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
     this.properties.relatedParentField ??= undefined;
     this.properties.relatedChildField ??= undefined;
     this.properties.relatedChildViewId ??= undefined;
-    // 👉 nuevo
     this.properties.relatedEditViewId ??= undefined;
+
+    // NUEVO: por defecto dejamos habilitada la edición
+    this.properties.allowRelatedEdit ??= true;
   }
 
   public render(): void {
@@ -109,6 +113,7 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
       relatedChildField,
       relatedChildViewId,
       relatedEditViewId,
+      allowRelatedEdit = true,
     } = this.properties;
 
     if (!listId) {
@@ -149,8 +154,10 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
       relatedParentField,
       relatedChildField,
       relatedChildViewId,
-      // 👇 se lo pasamos al componente
       relatedEditViewId,
+
+      // 👇 esto prende/apaga el botón de edición en la grilla hija
+      allowRelatedEdit,
     });
 
     ReactDom.render(element, this.domElement);
@@ -204,10 +211,9 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
     }
 
     if (prop === "relatedListId" && newVal !== oldVal) {
-      // cuando cambia la lista hija, reseteamos TODO lo que depende de ella
       this.properties.relatedChildViewId = undefined;
       this.properties.relatedChildField = undefined;
-      this.properties.relatedEditViewId = undefined; // 👈 también esta
+      this.properties.relatedEditViewId = undefined;
 
       this._childViewOptions = [];
       this._childFieldOptionsChild = [];
@@ -239,8 +245,9 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
       "relatedParentField",
       "relatedChildField",
       "relatedChildViewId",
-      // 👇 agregamos la nueva para que re-renderice
       "relatedEditViewId",
+      // 👇 la nueva
+      "allowRelatedEdit",
     ];
     if (_trackedProps.indexOf(prop) !== -1) {
       if (newVal !== oldVal) this.render();
@@ -251,56 +258,94 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
 
   private async _loadLists(): Promise<void> {
     const rows = (await this._sp.web.lists.select("Id", "Title", "Hidden", "BaseTemplate")()) as Array<{
-      Id: string; Title: string; Hidden: boolean; BaseTemplate: number;
+      Id: string;
+      Title: string;
+      Hidden: boolean;
+      BaseTemplate: number;
     }>;
-    this._listOptions = rows.filter(l => !l.Hidden).map(l => ({ key: l.Id, text: l.Title }));
+    this._listOptions = rows.filter((l) => !l.Hidden).map((l) => ({ key: l.Id, text: l.Title }));
     this._listsLoaded = true;
   }
 
   private async _loadViews(listId: string): Promise<void> {
-    const rows = (await this._sp.web.lists.getById(listId)
+    const rows = (await this._sp.web.lists
+      .getById(listId)
       .views.select("Id", "Title", "Hidden", "PersonalView")()) as Array<{
-        Id: string; Title: string; Hidden: boolean; PersonalView: boolean;
-      }>;
-    this._viewOptions = rows.filter(v => !v.Hidden && !v.PersonalView).map(v => ({ key: v.Id, text: v.Title }));
+      Id: string;
+      Title: string;
+      Hidden: boolean;
+      PersonalView: boolean;
+    }>;
+    this._viewOptions = rows
+      .filter((v) => !v.Hidden && !v.PersonalView)
+      .map((v) => ({ key: v.Id, text: v.Title }));
     this._viewsLoadedFor = listId;
   }
 
   private async _loadBooleanFields(listId: string): Promise<void> {
-    const fields = (await this._sp.web.lists.getById(listId).fields
-      .select("InternalName", "Title", "Hidden", "TypeAsString")()) as Array<{
-        InternalName: string; Title: string; Hidden: boolean; TypeAsString: string;
-      }>;
+    const fields = (await this._sp.web.lists
+      .getById(listId)
+      .fields.select("InternalName", "Title", "Hidden", "TypeAsString")()) as Array<{
+      InternalName: string;
+      Title: string;
+      Hidden: boolean;
+      TypeAsString: string;
+    }>;
     this._boolFieldOptions = fields
-      .filter(f => !f.Hidden && f.TypeAsString === "Boolean")
-      .map(f => ({ key: f.InternalName, text: `${f.Title} (${f.InternalName})` }));
+      .filter((f) => !f.Hidden && f.TypeAsString === "Boolean")
+      .map((f) => ({ key: f.InternalName, text: `${f.Title} (${f.InternalName})` }));
     this._boolsLoadedFor = listId;
   }
 
   // ------- Relacionados (lista hija)
   private async _loadChildLists(): Promise<void> {
     const rows = (await this._sp.web.lists.select("Id", "Title", "Hidden", "BaseTemplate")()) as Array<{
-      Id: string; Title: string; Hidden: boolean; BaseTemplate: number;
+      Id: string;
+      Title: string;
+      Hidden: boolean;
+      BaseTemplate: number;
     }>;
-    this._childListOptions = rows.filter(l => !l.Hidden).map(l => ({ key: l.Id, text: l.Title }));
+    this._childListOptions = rows.filter((l) => !l.Hidden).map((l) => ({ key: l.Id, text: l.Title }));
   }
 
   private async _loadChildViews(listId: string): Promise<void> {
-    const rows = (await this._sp.web.lists.getById(listId)
+    const rows = (await this._sp.web.lists
+      .getById(listId)
       .views.select("Id", "Title", "Hidden", "PersonalView")()) as Array<{
-        Id: string; Title: string; Hidden: boolean; PersonalView: boolean;
-      }>;
-    this._childViewOptions = rows.filter(v => !v.Hidden && !v.PersonalView).map(v => ({ key: v.Id, text: v.Title }));
+      Id: string;
+      Title: string;
+      Hidden: boolean;
+      PersonalView: boolean;
+    }>;
+    this._childViewOptions = rows
+      .filter((v) => !v.Hidden && !v.PersonalView)
+      .map((v) => ({ key: v.Id, text: v.Title }));
     this._childViewsLoadedFor = listId;
   }
 
   private async _loadChildFields(listId: string): Promise<void> {
-    const fields = (await this._sp.web.lists.getById(listId).fields
-      .select("InternalName", "Title", "Hidden", "ReadOnlyField", "Sealed", "TypeAsString")()) as Array<{
-        InternalName: string; Title: string; Hidden: boolean; ReadOnlyField: boolean; Sealed: boolean; TypeAsString: string;
-      }>;
-    const usable = fields.filter(f => !f.Hidden && !f.Sealed);
-    this._childFieldOptionsChild = usable.map(f => ({ key: f.InternalName, text: `${f.Title} (${f.InternalName})` }));
+    const fields = (await this._sp.web.lists
+      .getById(listId)
+      .fields.select(
+        "InternalName",
+        "Title",
+        "Hidden",
+        "ReadOnlyField",
+        "Sealed",
+        "TypeAsString"
+      )()) as Array<{
+      InternalName: string;
+      Title: string;
+      Hidden: boolean;
+      ReadOnlyField: boolean;
+      Sealed: boolean;
+      TypeAsString: string;
+    }>;
+    const usable = fields.filter((f) => !f.Hidden && !f.Sealed);
+    this._childFieldOptionsChild = usable.map((f) => ({
+      key: f.InternalName,
+      text: `${f.Title} (${f.InternalName})`,
+    }));
     this._childFieldsLoadedFor = listId;
   }
 
@@ -323,13 +368,17 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
                   label: "Vista (opcional)",
                   options: this._viewOptions,
                   selectedKey: this.properties.viewId,
-                  disabled: !this.properties.listId || this._viewsLoadedFor !== this.properties.listId,
+                  disabled:
+                    !this.properties.listId ||
+                    this._viewsLoadedFor !== this.properties.listId,
                 }),
                 PropertyPaneDropdown("toggleField", {
                   label: "Campo booleano (Activar/Desactivar)",
                   options: this._boolFieldOptions,
                   selectedKey: this.properties.toggleField,
-                  disabled: !this.properties.listId || this._boolsLoadedFor !== this.properties.listId,
+                  disabled:
+                    !this.properties.listId ||
+                    this._boolsLoadedFor !== this.properties.listId,
                 }),
               ],
             },
@@ -399,7 +448,6 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
                     !this.properties.relatedListId ||
                     this._childViewsLoadedFor !== this.properties.relatedListId,
                 }),
-                // 👇 este es el que faltaba
                 PropertyPaneDropdown("relatedEditViewId", {
                   label: "Vista de edición de la lista hija",
                   options: this._childViewOptions,
@@ -407,6 +455,10 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
                   disabled:
                     !this.properties.relatedListId ||
                     this._childViewsLoadedFor !== this.properties.relatedListId,
+                }),
+                PropertyPaneCheckbox("allowRelatedEdit", {
+                  text: "Edición documentos",
+                  checked: this.properties.allowRelatedEdit,
                 }),
               ],
             },
