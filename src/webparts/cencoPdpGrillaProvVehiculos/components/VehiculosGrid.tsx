@@ -53,7 +53,10 @@ const appTheme = createTheme({
     black: "#000000",
     white: "#ffffff",
   },
-  fonts: { medium: { fontSize: "14px" }, large: { fontSize: "16px", fontWeight: 600 } },
+  fonts: {
+    medium: { fontSize: "14px" },
+    large: { fontSize: "16px", fontWeight: 600 },
+  },
 });
 
 const useStyles = () => {
@@ -98,11 +101,20 @@ const useStyles = () => {
     maxHeight: "70vh",
     overflow: "auto",
   });
-  return { headerClass, listWrapper, classes, headerStyles, modalHeader, modalBody };
+  return {
+    headerClass,
+    listWrapper,
+    classes,
+    headerStyles,
+    modalHeader,
+    modalBody,
+  };
 };
 
 const useWindowW = () => {
-  const [w, setW] = React.useState<number>(typeof window === "undefined" ? 1200 : window.innerWidth);
+  const [w, setW] = React.useState<number>(
+    typeof window === "undefined" ? 1200 : window.innerWidth
+  );
   React.useEffect(() => {
     const onR = () => setW(window.innerWidth);
     window.addEventListener("resize", onR);
@@ -113,17 +125,26 @@ const useWindowW = () => {
 
 type Semaforo = "Vigente" | "Por vencer" | "Vencido";
 
-const calcSemaforo = (fechaStr?: string, warnDays = 30, now = new Date()): Semaforo => {
+const calcSemaforo = (
+  fechaStr?: string,
+  warnDays = 30,
+  now = new Date()
+): Semaforo => {
   if (!fechaStr) return "Vencido";
   const f = new Date(fechaStr);
   if (isNaN(f.getTime())) return "Vencido";
-  const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const t0 = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate()
+  ).getTime();
   const tf = new Date(f.getFullYear(), f.getMonth(), f.getDate()).getTime();
   if (tf < t0) return "Vencido";
   const diff = Math.ceil((tf - t0) / 86400000);
   return diff <= warnDays ? "Por vencer" : "Vigente";
 };
-const semaforoColor = (s: Semaforo) => (s === "Vigente" ? "#14ae5c" : s === "Por vencer" ? "#f5a524" : "#f31260");
+const semaforoColor = (s: Semaforo) =>
+  s === "Vigente" ? "#14ae5c" : s === "Por vencer" ? "#f5a524" : "#f31260";
 
 type Props = {
   service: IVehiculosService;
@@ -144,6 +165,7 @@ type Props = {
   relatedParentField?: string;
   relatedChildField?: string;
   relatedChildViewId?: string;
+  relatedEditViewId?: string;
 };
 
 const VehiculosGrid: React.FC<Props> = ({
@@ -165,11 +187,16 @@ const VehiculosGrid: React.FC<Props> = ({
   relatedParentField,
   relatedChildField,
   relatedChildViewId,
+  relatedEditViewId,
 }) => {
   const [dynCols, setDynCols] = React.useState<IColumn[] | null>(null);
   const [dynItems, setDynItems] = React.useState<any[] | null>(null);
-  const [dynSchema, setDynSchema] = React.useState<Record<string, EditField>>({});
-  const [dynLookupOpts, setDynLookupOpts] = React.useState<Record<string, IDropdownOption[]>>({});
+  const [dynSchema, setDynSchema] = React.useState<Record<string, EditField>>(
+    {}
+  );
+  const [dynLookupOpts, setDynLookupOpts] = React.useState<
+    Record<string, IDropdownOption[]>
+  >({});
 
   const {
     s,
@@ -215,10 +242,15 @@ const VehiculosGrid: React.FC<Props> = ({
 
     const lookupEntries = await Promise.all(
       metas
-        .filter((m) => (m.type === "Lookup" || m.type === "User") && m.lookupListId)
+        .filter(
+          (m) => (m.type === "Lookup" || m.type === "User") && m.lookupListId
+        )
         .map(async (m) => {
           const opts = await service.getLookupOptionsByListId(m.lookupListId!);
-          const asDropdown: IDropdownOption[] = opts.map((o) => ({ key: o.key, text: o.text }));
+          const asDropdown: IDropdownOption[] = opts.map((o) => ({
+            key: o.key,
+            text: o.text,
+          }));
           return [m.internalName, asDropdown] as [string, IDropdownOption[]];
         })
     );
@@ -233,12 +265,21 @@ const VehiculosGrid: React.FC<Props> = ({
     void loadDynamic();
   }, [loadDynamic]);
 
-  const { headerClass, listWrapper, classes, headerStyles, modalHeader, modalBody } = useStyles();
+  const {
+    headerClass,
+    listWrapper,
+    classes,
+    headerStyles,
+    modalHeader,
+    modalBody,
+  } = useStyles();
   const width = useWindowW();
   const isMobile = width < 640;
 
   const [query, setQuery] = React.useState("");
-  const [cfg, setCfg] = React.useState<Record<string, { dateField: string; warnDays: number }>>({});
+  const [cfg, setCfg] = React.useState<
+    Record<string, { dateField: string; warnDays: number }>
+  >({});
 
   React.useEffect(() => {
     if (!enableSemaforo || !service.getTipoFormularioConfig) return;
@@ -273,7 +314,9 @@ const VehiculosGrid: React.FC<Props> = ({
       if (!q) return dynItems;
       return dynItems.filter((it) => {
         const obj = it as Record<string, unknown>;
-        return Object.keys(obj).some((k) => stringify(obj[k]).toLowerCase().includes(q));
+        return Object.keys(obj).some((k) =>
+          stringify(obj[k]).toLowerCase().includes(q)
+        );
       });
     }
     if (!q) return s.items as Vehiculo[];
@@ -301,11 +344,37 @@ const VehiculosGrid: React.FC<Props> = ({
   const [relBusy, setRelBusy] = React.useState(false);
   const [relCols, setRelCols] = React.useState<IColumn[]>([]);
   const [relItems, setRelItems] = React.useState<any[]>([]);
+  const [relParentValue, setRelParentValue] = React.useState<any>(null);
+
+  const [relEditOpen, setRelEditOpen] = React.useState(false);
+  const [relEditLoading, setRelEditLoading] = React.useState(false);
+  const [relEditSaving, setRelEditSaving] = React.useState(false);
+  const [relEditSchema, setRelEditSchema] = React.useState<EditField[]>([]);
+  const [relEditValues, setRelEditValues] = React.useState<Record<string, any>>(
+    {}
+  );
+  const [relEditItemId, setRelEditItemId] = React.useState<number | null>(null);
+  const [relEditListId, setRelEditListId] = React.useState<string | null>(null);
+  const [relEditLookups, setRelEditLookups] = React.useState<
+    Record<string, IDropdownOption[]>
+  >({});
+  const [relEditAttachments, setRelEditAttachments] = React.useState<
+    Array<{ name: string; serverRelativeUrl: string }>
+  >([]);
+  const [relEditNewFile, setRelEditNewFile] = React.useState<File | null>(null);
+
+  const getRowId = (it: any): number | undefined => {
+    if (!it) return undefined;
+    return (
+      it.id ?? it.Id ?? it.ID ?? it.ItemId ?? it["ID_x0020_"] ?? it["Id_x0020_"]
+    );
+  };
 
   const openRelated = React.useCallback(
     async (row: any) => {
       if (!relatedListId || !relatedParentField || !relatedChildField) return;
       const parentValue = row?.[relatedParentField];
+      setRelParentValue(parentValue);
       setRelOpen(true);
       setRelBusy(true);
       try {
@@ -327,6 +396,7 @@ const VehiculosGrid: React.FC<Props> = ({
           );
           setRelCols(cols);
           setRelItems(items);
+          setRelEditListId(relatedListId);
         } else {
           const { columns, items } = await service.getRelatedItems({
             childListId: relatedListId,
@@ -344,16 +414,101 @@ const VehiculosGrid: React.FC<Props> = ({
           );
           setRelCols(cols);
           setRelItems(items);
+          setRelEditListId(relatedListId);
         }
       } finally {
         setRelBusy(false);
       }
     },
-    [service, relatedListId, relatedParentField, relatedChildField, relatedChildViewId, filterOutIdCols]
+    [
+      service,
+      relatedListId,
+      relatedParentField,
+      relatedChildField,
+      relatedChildViewId,
+      filterOutIdCols,
+    ]
+  );
+
+  const openRelatedEdit = React.useCallback(
+    async (item: any) => {
+      if (!relEditListId || !relatedEditViewId) return;
+      const itemId = item.Id ?? item.ID ?? item.id;
+      if (!itemId) return;
+
+      setRelEditOpen(true);
+      setRelEditLoading(true);
+      setRelEditItemId(itemId);
+      setRelEditNewFile(null);
+
+      try {
+        const viewFieldNames = await service.getViewFieldNamesFromList(
+          relEditListId,
+          relatedEditViewId
+        );
+        const allFields = await service.getListFields(relEditListId);
+
+        const schema: EditField[] = viewFieldNames
+          .map((vf) => {
+            const hit = allFields.find(
+              (f: any) =>
+                f.internalName.toLowerCase() === String(vf).toLowerCase()
+            );
+            if (!hit) return null;
+            return {
+              internalName: hit.internalName,
+              title: hit.title,
+              type: hit.type,
+              required: false,
+              readOnly: !!(hit as any).readOnly,
+              allowMultiple: !!(hit as any).allowMultiple,
+              lookupListId: (hit as any).lookupListId,
+              choices: (hit as any).choices,
+            } as EditField;
+          })
+          .filter((x): x is EditField => !!x);
+
+        setRelEditSchema(schema);
+
+        const lookupMap: Record<string, IDropdownOption[]> = {};
+        await Promise.all(
+          schema
+            .filter(
+              (f) =>
+                (f.type === "Lookup" || f.type === "User") && f.lookupListId
+            )
+            .map(async (f) => {
+              const opts = await service.getLookupOptionsByListId(
+                f.lookupListId!
+              );
+              lookupMap[f.internalName] = opts.map((o) => ({
+                key: o.key,
+                text: o.text,
+              }));
+            })
+        );
+
+        const values = await service.getItemValuesFromList(
+          relEditListId,
+          itemId,
+          schema
+        );
+
+        const atts = await service.listAttachments(relEditListId, itemId);
+
+        setRelEditLookups(lookupMap);
+        setRelEditValues(values);
+        setRelEditAttachments(atts);
+      } finally {
+        setRelEditLoading(false);
+      }
+    },
+    [relEditListId, relatedEditViewId, service]
   );
 
   const proveedorText = (v: any): string => {
-    if (v.proveedorTitles && v.proveedorTitles.length) return v.proveedorTitles.join(", ");
+    if (v.proveedorTitles && v.proveedorTitles.length)
+      return v.proveedorTitles.join(", ");
     const opts = (s.meta?.provOptions || []) as IDropdownOption[];
     const hit = (v.proveedorIds || [])
       .map((id: number) => opts.find((o) => Number(o.key) === id)?.text)
@@ -371,12 +526,25 @@ const VehiculosGrid: React.FC<Props> = ({
   const buildExportRows = () => {
     if (dynCols && dynItems) {
       const headers = dynCols.map((c) => c.name);
-      const rows = dynItems.map((it: any) => dynCols.map((c) => stringify((it as any)[c.fieldName!])));
+      const rows = dynItems.map((it: any) =>
+        dynCols.map((c) => stringify((it as any)[c.fieldName!]))
+      );
       return { headers, rows };
     }
-    const headers = ["Placa", "Proveedor", "Marca", "Modelo", ...(toggleField ? ["Activo"] : [])];
+    const headers = [
+      "Placa",
+      "Proveedor",
+      "Marca",
+      "Modelo",
+      ...(toggleField ? ["Activo"] : []),
+    ];
     const rows = s.items.map((v: any) => {
-      const fila: (string | number | boolean)[] = [v.placa || "", proveedorText(v), v.marca || "", v.modelo || ""];
+      const fila: (string | number | boolean)[] = [
+        v.placa || "",
+        proveedorText(v),
+        v.marca || "",
+        v.modelo || "",
+      ];
       if (toggleField) fila.push(!!v.toggle ? "Sí" : "No");
       return fila;
     });
@@ -388,7 +556,9 @@ const VehiculosGrid: React.FC<Props> = ({
     const sep = ";";
     const lines: string[] = [];
     lines.push(headers.map(csvEscape).join(sep));
-    rows.forEach((r: (string | number | boolean)[]) => lines.push(r.map(csvEscape).join(sep)));
+    rows.forEach((r: (string | number | boolean)[]) =>
+      lines.push(r.map(csvEscape).join(sep))
+    );
     const csv = "\uFEFF" + lines.join("\r\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -402,11 +572,15 @@ const VehiculosGrid: React.FC<Props> = ({
   };
 
   const renderSemaforo = (it: any) => {
-    const keyText = String(it?.[tipoFieldName] ?? "").trim().toLowerCase();
+    const keyText = String(it?.[tipoFieldName] ?? "")
+      .trim()
+      .toLowerCase();
     const rule = keyText ? cfg[keyText] : undefined;
     const dateField = rule?.dateField || fallbackDateField;
     const warnDays = rule?.warnDays ?? defaultWarnDays;
-    const rawDate = dateField ? (it?.[dateField] as string | undefined) : undefined;
+    const rawDate = dateField
+      ? (it?.[dateField] as string | undefined)
+      : undefined;
     const estado = calcSemaforo(rawDate, warnDays);
     const color = semaforoColor(estado);
     const dot: React.CSSProperties = {
@@ -418,18 +592,15 @@ const VehiculosGrid: React.FC<Props> = ({
       marginRight: 8,
       boxShadow: "0 0 0 2px rgba(0,0,0,.06)",
     };
-    const tooltip = rawDate ? `${estado} — vence: ${new Date(rawDate).toLocaleDateString()}` : estado;
+    const tooltip = rawDate
+      ? `${estado} — vence: ${new Date(rawDate).toLocaleDateString()}`
+      : estado;
     return (
       <span title={tooltip}>
         <span style={dot} aria-label={estado} />
         <span>{estado}</span>
       </span>
     );
-  };
-
-  const getRowId = (it: any): number | undefined => {
-    if (!it) return undefined;
-    return it.id ?? it.Id ?? it.ID ?? it.ItemId ?? it["ID_x0020_"] ?? it["Id_x0020_"];
   };
 
   const baseColsOnly: IColumn[] = [
@@ -443,7 +614,10 @@ const VehiculosGrid: React.FC<Props> = ({
         if (!it) return null;
         const isEditing = s.editingId === getRowId(it);
         return isEditing ? (
-          <TextField value={s.draft?.placa || ""} onChange={(_, v) => updateDraft({ placa: v || "" })} />
+          <TextField
+            value={s.draft?.placa || ""}
+            onChange={(_, v) => updateDraft({ placa: v || "" })}
+          />
         ) : (
           <span>{it.placa}</span>
         );
@@ -463,8 +637,16 @@ const VehiculosGrid: React.FC<Props> = ({
             placeholder="Seleccione…"
             options={(s.meta?.provOptions || []) as IDropdownOption[]}
             multiSelect={!!s.meta?.provMulti}
-            selectedKey={!s.meta?.provMulti ? (s.draft?.proveedorId as number | undefined) : undefined}
-            selectedKeys={s.meta?.provMulti ? (s.draft?.proveedorId as number[] | undefined) : undefined}
+            selectedKey={
+              !s.meta?.provMulti
+                ? (s.draft?.proveedorId as number | undefined)
+                : undefined
+            }
+            selectedKeys={
+              s.meta?.provMulti
+                ? (s.draft?.proveedorId as number[] | undefined)
+                : undefined
+            }
             onChange={(_, opt) => toggleProv(Number(opt!.key), !!opt?.selected)}
           />
         ) : (
@@ -480,11 +662,11 @@ const VehiculosGrid: React.FC<Props> = ({
       name: "Activo",
       minWidth: 70,
       maxWidth: 90,
-      onRender: (it?: any) => (!it ? null : <span>{it.toggle ? "Sí" : "No"}</span>),
+      onRender: (it?: any) =>
+        !it ? null : <span>{it.toggle ? "Sí" : "No"}</span>,
     });
   }
 
-  // ⬇⬇⬇ AQUÍ el cambio importante
   const editableDynCols: IColumn[] | null = React.useMemo(() => {
     if (!dynCols) return null;
 
@@ -500,9 +682,7 @@ const VehiculosGrid: React.FC<Props> = ({
           const rawVal = it[fieldName as keyof typeof it];
           const meta = dynSchema[fieldName];
 
-          // ======== LECTURA ========
           if (!isEditing) {
-            // boolean
             if (meta?.type === "Boolean") {
               const b =
                 rawVal === true ||
@@ -513,33 +693,36 @@ const VehiculosGrid: React.FC<Props> = ({
               return <span>{b ? "Sí" : "No"}</span>;
             }
 
-            // lookup / user
             if (meta && (meta.type === "Lookup" || meta.type === "User")) {
               const opts = dynLookupOpts[fieldName];
               let display: string | undefined;
 
-              // 1) si vino como objeto con Title
               if (rawVal && typeof rawVal === "object" && "Title" in rawVal) {
                 display = String((rawVal as any).Title || "");
               }
 
-              // 2) si vino directamente como texto (porque ya lo resolviste en el service)
-              if (!display && (typeof rawVal === "string" || typeof rawVal === "number")) {
+              if (
+                !display &&
+                (typeof rawVal === "string" || typeof rawVal === "number")
+              ) {
                 display = String(rawVal);
               }
 
-              // 3) si no vino nada en el campo "limpio", probamos con los típicos ...Id
               if (!display && opts && opts.length) {
                 const idCandidates = [
                   it[`${fieldName}Id`],
                   it[`${fieldName}_Id`],
                   it[`${fieldName}ID`],
                 ];
-                const first = idCandidates.find((x) => x !== undefined && x !== null);
+                const first = idCandidates.find(
+                  (x) => x !== undefined && x !== null
+                );
                 if (Array.isArray(first)) {
                   const texts = first
                     .map((id: any) => {
-                      const hit = opts.find((o) => Number(o.key) === Number(id));
+                      const hit = opts.find(
+                        (o) => Number(o.key) === Number(id)
+                      );
                       return hit ? hit.text : undefined;
                     })
                     .filter(Boolean)
@@ -554,17 +737,27 @@ const VehiculosGrid: React.FC<Props> = ({
               return <span>{display ?? ""}</span>;
             }
 
-            // multichoice
             if (meta?.type === "MultiChoice") {
-              return <span>{Array.isArray(rawVal) ? rawVal.join(", ") : ""}</span>;
+              return (
+                <span>{Array.isArray(rawVal) ? rawVal.join(", ") : ""}</span>
+              );
             }
 
-            if (Array.isArray(rawVal)) return <span>{rawVal.map((x: any) => x?.Title ?? x ?? "").join(", ")}</span>;
-            if (rawVal && typeof rawVal === "object") return <span>{String((rawVal as any).Title ?? stringify(rawVal))}</span>;
+            if (Array.isArray(rawVal))
+              return (
+                <span>
+                  {rawVal.map((x: any) => x?.Title ?? x ?? "").join(", ")}
+                </span>
+              );
+            if (rawVal && typeof rawVal === "object")
+              return (
+                <span>
+                  {String((rawVal as any).Title ?? stringify(rawVal))}
+                </span>
+              );
             return <span>{rawVal ?? ""}</span>;
           }
 
-          // ======== EDICIÓN ========
           if (meta) {
             const t = meta.type;
 
@@ -583,13 +776,17 @@ const VehiculosGrid: React.FC<Props> = ({
                     { key: "false", text: "No" },
                   ]}
                   selectedKey={current ? "true" : "false"}
-                  onChange={(_, opt) => updateDraft({ [fieldName]: opt?.key === "true" } as any)}
+                  onChange={(_, opt) =>
+                    updateDraft({ [fieldName]: opt?.key === "true" } as any)
+                  }
                 />
               );
             }
 
             if (t === "Choice" && meta.choices && meta.choices.length) {
-              const opts: IDropdownOption[] = meta.choices.map((ch: string) => ({ key: ch, text: ch }));
+              const opts: IDropdownOption[] = meta.choices.map(
+                (ch: string) => ({ key: ch, text: ch })
+              );
               const current =
                 (s.draft as any)?.[fieldName] ??
                 (rawVal && typeof rawVal === "object" && "Title" in rawVal
@@ -599,15 +796,22 @@ const VehiculosGrid: React.FC<Props> = ({
                 <Dropdown
                   options={opts}
                   selectedKey={current ? String(current) : undefined}
-                  onChange={(_, opt) => updateDraft({ [fieldName]: opt ? String(opt.key) : "" } as any)}
+                  onChange={(_, opt) =>
+                    updateDraft({
+                      [fieldName]: opt ? String(opt.key) : "",
+                    } as any)
+                  }
                 />
               );
             }
 
             if (t === "MultiChoice" && meta.choices && meta.choices.length) {
-              const opts: IDropdownOption[] = meta.choices.map((ch: string) => ({ key: ch, text: ch }));
+              const opts: IDropdownOption[] = meta.choices.map(
+                (ch: string) => ({ key: ch, text: ch })
+              );
               const current: string[] =
-                (s.draft as any)?.[fieldName] ?? (Array.isArray(rawVal) ? (rawVal as string[]) : []);
+                (s.draft as any)?.[fieldName] ??
+                (Array.isArray(rawVal) ? (rawVal as string[]) : []);
               return (
                 <Dropdown
                   multiSelect
@@ -615,12 +819,11 @@ const VehiculosGrid: React.FC<Props> = ({
                   selectedKeys={current}
                   onChange={(_, opt) => {
                     const key = String(opt!.key);
-                    const prev: string[] =
-                      (s.draft as any)?.[fieldName]
-                        ? ((s.draft as any)[fieldName] as string[]).slice()
-                        : Array.isArray(rawVal)
-                        ? (rawVal as string[]).slice()
-                        : [];
+                    const prev: string[] = (s.draft as any)?.[fieldName]
+                      ? ((s.draft as any)[fieldName] as string[]).slice()
+                      : Array.isArray(rawVal)
+                      ? (rawVal as string[]).slice()
+                      : [];
                     const idx = prev.indexOf(key);
                     if (opt?.selected) {
                       if (idx === -1) prev.push(key);
@@ -637,7 +840,6 @@ const VehiculosGrid: React.FC<Props> = ({
               const opts = dynLookupOpts[fieldName] || [];
               const currentDraft = (s.draft as any)?.[fieldName];
 
-              // 👇 tratar de obtener un id también desde los ...Id del item
               const idCandidates = [
                 currentDraft,
                 rawVal,
@@ -664,7 +866,9 @@ const VehiculosGrid: React.FC<Props> = ({
                 <Dropdown
                   options={opts}
                   selectedKey={selectedKey}
-                  onChange={(_, opt) => updateDraft({ [fieldName]: opt ? opt.key : null } as any)}
+                  onChange={(_, opt) =>
+                    updateDraft({ [fieldName]: opt ? opt.key : null } as any)
+                  }
                 />
               );
             }
@@ -704,7 +908,10 @@ const VehiculosGrid: React.FC<Props> = ({
 
           return (
             <TextField
-              value={(s.draft as any)?.[fieldName] ?? (rawVal != null ? String(rawVal) : "")}
+              value={
+                (s.draft as any)?.[fieldName] ??
+                (rawVal != null ? String(rawVal) : "")
+              }
               onChange={(_, v) => updateDraft({ [fieldName]: v || "" } as any)}
             />
           );
@@ -721,19 +928,39 @@ const VehiculosGrid: React.FC<Props> = ({
       if (!it) return null;
       const thisId = getRowId(it);
       const isEditing = s.editingId === thisId;
-      const real = s.items.find((row: any) => getRowId(row) === thisId) as Vehiculo | undefined;
+      const real = s.items.find((row: any) => getRowId(row) === thisId) as
+        | Vehiculo
+        | undefined;
       return isEditing ? (
         <Stack horizontal tokens={{ childrenGap: 4 }}>
-          <IconButton iconProps={{ iconName: "CheckMark" }} title="Confirmar" onClick={() => confirm().catch(() => {})} disabled={s.saving} />
-          <IconButton iconProps={{ iconName: "Cancel" }} title="Cancelar" onClick={() => cancel()} disabled={s.saving} />
+          <IconButton
+            iconProps={{ iconName: "CheckMark" }}
+            title="Confirmar"
+            onClick={() => confirm().catch(() => {})}
+            disabled={s.saving}
+          />
+          <IconButton
+            iconProps={{ iconName: "Cancel" }}
+            title="Cancelar"
+            onClick={() => cancel()}
+            disabled={s.saving}
+          />
         </Stack>
       ) : (
         <Stack horizontal tokens={{ childrenGap: 4 }}>
           {showEdit && (
-            <IconButton iconProps={{ iconName: "Edit" }} title="Editar" onClick={() => enterEdit(real || it)} />
+            <IconButton
+              iconProps={{ iconName: "Edit" }}
+              title="Editar"
+              onClick={() => enterEdit(real || it)}
+            />
           )}
           {showDelete && real && (
-            <IconButton iconProps={{ iconName: "Delete" }} title="Borrar" onClick={() => remove(real.id).catch(() => {})} />
+            <IconButton
+              iconProps={{ iconName: "Delete" }}
+              title="Borrar"
+              onClick={() => remove(real.id).catch(() => {})}
+            />
           )}
           {toggleField && showToggle && real && (
             <IconButton
@@ -806,7 +1033,13 @@ const VehiculosGrid: React.FC<Props> = ({
     const customStyles: Partial<IDetailsRowStyles> = {
       root: { selectors: { "&:hover": { background: "#f0f7ff !important" } } },
     };
-    return <DetailsRow {...rowProps} styles={customStyles} className={classes.zebraRow} />;
+    return (
+      <DetailsRow
+        {...rowProps}
+        styles={customStyles}
+        className={classes.zebraRow}
+      />
+    );
   };
 
   const onRenderDetailsHeader = (
@@ -814,14 +1047,22 @@ const VehiculosGrid: React.FC<Props> = ({
     defaultRender?: IRenderFunction<IDetailsHeaderProps>
   ) => {
     if (!props || !defaultRender) return null;
-    const mergedProps: IDetailsHeaderProps = { ...props, styles: { ...props.styles, ...headerStyles } };
+    const mergedProps: IDetailsHeaderProps = {
+      ...props,
+      styles: { ...props.styles, ...headerStyles },
+    };
     return <div className={headerClass}>{defaultRender(mergedProps)}</div>;
   };
 
   if (s.loading && !dynItems) {
     return (
       <ThemeProvider theme={appTheme}>
-        <ShimmeredDetailsList enableShimmer items={[]} columns={columns} selectionMode={SelectionMode.none} />
+        <ShimmeredDetailsList
+          enableShimmer
+          items={[]}
+          columns={columns}
+          selectionMode={SelectionMode.none}
+        />
       </ThemeProvider>
     );
   }
@@ -829,8 +1070,19 @@ const VehiculosGrid: React.FC<Props> = ({
   return (
     <ThemeProvider theme={appTheme}>
       <Stack tokens={{ childrenGap: 12 }}>
-        <Stack horizontal wrap horizontalAlign="space-between" className={classes.toolbar}>
-          <Stack className={classes.responsiveRow} horizontal wrap tokens={{ childrenGap: 8 }} verticalAlign="center">
+        <Stack
+          horizontal
+          wrap
+          horizontalAlign="space-between"
+          className={classes.toolbar}
+        >
+          <Stack
+            className={classes.responsiveRow}
+            horizontal
+            wrap
+            tokens={{ childrenGap: 8 }}
+            verticalAlign="center"
+          >
             <CommandBar items={cmdItems} ariaLabel="Acciones" />
           </Stack>
           <Stack className={classes.responsiveRow} horizontalAlign="end">
@@ -860,8 +1112,12 @@ const VehiculosGrid: React.FC<Props> = ({
                     if (col.onRender) return col.onRender(item, _i, col);
                     const v = item[col.fieldName!];
                     if (v == null) return "";
-                    if (Array.isArray(v)) return v.map((x) => (x?.Title ?? x ?? "")).join(", ");
-                    if (typeof v === "object") return String((v as any).Title ?? stringify(v));
+                    if (Array.isArray(v))
+                      return v
+                        .map((x) => (x?.Title ?? x ?? "") as string)
+                        .join(", ");
+                    if (typeof v === "object")
+                      return String((v as any).Title ?? stringify(v));
                     return String(v);
                   }
                 : undefined
@@ -871,7 +1127,9 @@ const VehiculosGrid: React.FC<Props> = ({
 
         <Modal
           isOpen={relOpen}
-          onDismiss={() => setRelOpen(false)}
+          onDismiss={() => {
+            setRelOpen(false);
+          }}
           isBlocking={false}
           allowTouchBodyScroll
           styles={{
@@ -887,8 +1145,13 @@ const VehiculosGrid: React.FC<Props> = ({
             <span style={{ fontWeight: 600 }}>Documentos relacionados</span>
             <IconButton
               iconProps={{ iconName: "Cancel" }}
-              styles={{ root: { color: "#fff" }, rootHovered: { color: "#fff" } }}
-              onClick={() => setRelOpen(false)}
+              styles={{
+                root: { color: "#fff" },
+                rootHovered: { color: "#fff" },
+              }}
+              onClick={() => {
+                setRelOpen(false);
+              }}
               ariaLabel="Cerrar"
             />
           </div>
@@ -899,26 +1162,404 @@ const VehiculosGrid: React.FC<Props> = ({
               <div className={listWrapper} style={{ boxShadow: "none" }}>
                 <DetailsList
                   items={relItems}
-                  columns={filterOutIdCols(
-                    relCols.map((c) => ({
-                      ...c,
-                      minWidth: c.minWidth ?? 100,
-                      isResizable: true,
-                    }))
-                  )}
+                  columns={[
+                    ...filterOutIdCols(
+                      relCols.map((c) => ({
+                        ...c,
+                        minWidth: c.minWidth ?? 100,
+                        isResizable: true,
+                      }))
+                    ),
+                    {
+                      key: "relActions",
+                      name: "Acciones",
+                      minWidth: 90,
+                      onRender: (it?: any) =>
+                        it ? (
+                          <IconButton
+                            iconProps={{ iconName: "Edit" }}
+                            title="Editar"
+                            onClick={() => openRelatedEdit(it)}
+                          />
+                        ) : null,
+                    },
+                  ]}
                   selectionMode={SelectionMode.none}
                   constrainMode={ConstrainMode.horizontalConstrained}
                   compact={isMobile}
-                  onRenderItemColumn={(item?: any, _?: number, col?: IColumn) => {
-                    if (!item || !col) return null;
-                    const v = item[col.fieldName!];
-                    if (v == null) return "";
-                    if (Array.isArray(v)) return v.map((x) => (x?.Title ?? x ?? "")).join(", ");
-                    if (typeof v === "object") return String((v as any).Title ?? "");
-                    return String(v);
-                  }}
                 />
               </div>
+            )}
+          </div>
+        </Modal>
+
+        <Modal
+          isOpen={relEditOpen}
+          onDismiss={() => {
+            setRelEditOpen(false);
+            setRelEditSchema([]);
+            setRelEditValues({});
+            setRelEditItemId(null);
+            setRelEditAttachments([]);
+            setRelEditNewFile(null);
+          }}
+          isBlocking={true}
+          styles={{
+            main: {
+              width: 520,
+              maxWidth: "90vw",
+              borderRadius: 12,
+              overflow: "hidden",
+            },
+          }}
+        >
+          <div
+            style={{
+              background: "#1e88e5",
+              color: "#fff",
+              padding: "10px 14px",
+              fontWeight: 600,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <span>Editar documento relacionado</span>
+            <IconButton
+              iconProps={{ iconName: "Cancel" }}
+              styles={{ root: { color: "#fff" } }}
+              onClick={() => {
+                setRelEditOpen(false);
+                setRelEditSchema([]);
+                setRelEditValues({});
+                setRelEditItemId(null);
+                setRelEditAttachments([]);
+                setRelEditNewFile(null);
+              }}
+            />
+          </div>
+
+          <div style={{ padding: 14 }}>
+            {relEditLoading ? (
+              <Spinner label="Cargando campos..." />
+            ) : (
+              <>
+                {relEditSchema
+                  .filter((f) => !f.readOnly)
+                  .map((f) => {
+                    const val = relEditValues[f.internalName];
+
+                    const isEmpty =
+                      val === undefined ||
+                      val === null ||
+                      (typeof val === "string" && val.trim() === "") ||
+                      (Array.isArray(val) && val.length === 0);
+
+                    if (isEmpty) {
+                      return null;
+                    }
+
+                    if (
+                      (f.type === "Lookup" || f.type === "User") &&
+                      f.lookupListId
+                    ) {
+                      const opts = relEditLookups[f.internalName] || [];
+                      const selectedKey =
+                        typeof val === "object" && val
+                          ? (val as any).key ?? (val as any).Id
+                          : val;
+                      return (
+                        <Dropdown
+                          key={f.internalName}
+                          label={f.title}
+                          options={opts}
+                          selectedKey={selectedKey as any}
+                          onChange={(_, opt) =>
+                            setRelEditValues((prev) => ({
+                              ...prev,
+                              [f.internalName]: opt
+                                ? { key: opt.key, text: opt.text }
+                                : null,
+                            }))
+                          }
+                          styles={{ root: { marginBottom: 10 } }}
+                        />
+                      );
+                    }
+
+                    if (f.type === "Choice" && f.choices && f.choices.length) {
+                      return (
+                        <Dropdown
+                          key={f.internalName}
+                          label={f.title}
+                          options={f.choices.map((c) => ({ key: c, text: c }))}
+                          selectedKey={val ? String(val) : undefined}
+                          onChange={(_, opt) =>
+                            setRelEditValues((prev) => ({
+                              ...prev,
+                              [f.internalName]: opt ? opt.key : "",
+                            }))
+                          }
+                          styles={{ root: { marginBottom: 10 } }}
+                        />
+                      );
+                    }
+
+                    if (
+                      f.type === "MultiChoice" &&
+                      f.choices &&
+                      f.choices.length
+                    ) {
+                      const current: string[] = Array.isArray(val) ? val : [];
+                      return (
+                        <Dropdown
+                          key={f.internalName}
+                          label={f.title}
+                          multiSelect
+                          options={f.choices.map((c) => ({ key: c, text: c }))}
+                          selectedKeys={current}
+                          onChange={(_, opt) => {
+                            const k = String(opt!.key);
+                            const next = current.slice();
+                            const idx = next.indexOf(k);
+                            if (opt?.selected) {
+                              if (idx === -1) next.push(k);
+                            } else if (idx !== -1) {
+                              next.splice(idx, 1);
+                            }
+                            setRelEditValues((prev) => ({
+                              ...prev,
+                              [f.internalName]: next,
+                            }));
+                          }}
+                          styles={{ root: { marginBottom: 10 } }}
+                        />
+                      );
+                    }
+
+                    if (f.type === "DateTime") {
+                      return (
+                        <TextField
+                          key={f.internalName}
+                          label={f.title}
+                          type="date"
+                          value={val ? String(val).substring(0, 10) : ""}
+                          onChange={(_, v) =>
+                            setRelEditValues((prev) => ({
+                              ...prev,
+                              [f.internalName]: v ?? "",
+                            }))
+                          }
+                          styles={{ root: { marginBottom: 10 } }}
+                        />
+                      );
+                    }
+
+                    if (f.type === "Boolean") {
+                      const current =
+                        val === true ||
+                        val === 1 ||
+                        val === "1" ||
+                        val === "true" ||
+                        val === "TRUE";
+                      return (
+                        <Dropdown
+                          key={f.internalName}
+                          label={f.title}
+                          options={[
+                            { key: "true", text: "Sí" },
+                            { key: "false", text: "No" },
+                          ]}
+                          selectedKey={current ? "true" : "false"}
+                          onChange={(_, opt) =>
+                            setRelEditValues((prev) => ({
+                              ...prev,
+                              [f.internalName]: opt?.key === "true",
+                            }))
+                          }
+                          styles={{ root: { marginBottom: 10 } }}
+                        />
+                      );
+                    }
+
+                    return (
+                      <TextField
+                        key={f.internalName}
+                        label={f.title}
+                        value={val != null ? String(val) : ""}
+                        onChange={(_, v) =>
+                          setRelEditValues((prev) => ({
+                            ...prev,
+                            [f.internalName]: v ?? "",
+                          }))
+                        }
+                        styles={{ root: { marginBottom: 10 } }}
+                      />
+                    );
+                  })}
+
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                    Adjuntos actuales
+                  </div>
+                  {relEditAttachments.length ? (
+                    relEditAttachments.map((a) => (
+                      <div key={a.serverRelativeUrl}>
+                        <a
+                          href={a.serverRelativeUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {a.name}
+                        </a>
+                      </div>
+                    ))
+                  ) : (
+                    <div style={{ fontStyle: "italic", color: "#666" }}>
+                      Sin adjuntos
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ marginBottom: 12 }}>
+                  <label style={{ fontWeight: 600, display: "block" }}>
+                    Reemplazar adjunto
+                  </label>
+                  <input
+                    type="file"
+                    onChange={(e) =>
+                      setRelEditNewFile(e.target.files?.[0] ?? null)
+                    }
+                  />
+                </div>
+
+                <Stack
+                  horizontal
+                  tokens={{ childrenGap: 8 }}
+                  styles={{ root: { marginTop: 12 } }}
+                >
+                  <button
+                    style={{
+                      background: "#1e88e5",
+                      color: "#fff",
+                      border: "none",
+                      padding: "6px 18px",
+                      borderRadius: 3,
+                      cursor: "pointer",
+                    }}
+                    onClick={async () => {
+                      if (!relEditItemId || !relEditListId) return;
+                      setRelEditSaving(true);
+                      try {
+                        const svcAny = service as any;
+                        if (typeof svcAny.updateFieldsOnList === "function") {
+                          await svcAny.updateFieldsOnList(
+                            relEditListId,
+                            relEditItemId,
+                            relEditSchema,
+                            relEditValues
+                          );
+                        } else {
+                          await service.updateFields(
+                            relEditItemId,
+                            relEditSchema,
+                            relEditValues
+                          );
+                        }
+
+                        if (
+                          relEditNewFile &&
+                          relEditListId &&
+                          relEditItemId != null
+                        ) {
+                          await service.replaceAttachment(
+                            relEditListId,
+                            relEditItemId,
+                            relEditNewFile
+                          );
+                        }
+
+                        if (
+                          relParentValue != null &&
+                          relatedListId &&
+                          relatedChildField
+                        ) {
+                          if (relatedChildViewId) {
+                            const { columns, items } =
+                              await service.getRelatedGridByView(
+                                relatedListId,
+                                relatedChildViewId,
+                                relatedChildField,
+                                relParentValue
+                              );
+                            const cols: IColumn[] = filterOutIdCols(
+                              columns.map((c) => ({
+                                key: c.key,
+                                name: c.name,
+                                fieldName: c.fieldName,
+                                minWidth: c.minWidth ?? 100,
+                                isResizable: c.isResizable ?? true,
+                              }))
+                            );
+                            setRelCols(cols);
+                            setRelItems(items);
+                          } else {
+                            const { columns, items } =
+                              await service.getRelatedItems({
+                                childListId: relatedListId,
+                                childField: relatedChildField,
+                                parentValue: relParentValue,
+                              });
+                            const cols: IColumn[] = filterOutIdCols(
+                              columns.map((c) => ({
+                                key: c.key,
+                                name: c.name,
+                                fieldName: c.fieldName,
+                                minWidth: c.minWidth ?? 100,
+                                isResizable: c.isResizable ?? true,
+                              }))
+                            );
+                            setRelCols(cols);
+                            setRelItems(items);
+                          }
+                        }
+
+                        setRelEditOpen(false);
+                        setRelEditSchema([]);
+                        setRelEditValues({});
+                        setRelEditItemId(null);
+                        setRelEditAttachments([]);
+                        setRelEditNewFile(null);
+                      } finally {
+                        setRelEditSaving(false);
+                      }
+                    }}
+                    disabled={relEditSaving}
+                  >
+                    {relEditSaving ? "Guardando..." : "Guardar"}
+                  </button>
+                  <button
+                    style={{
+                      background: "#fff",
+                      border: "1px solid #ccc",
+                      padding: "6px 18px",
+                      borderRadius: 3,
+                      cursor: "pointer",
+                    }}
+                    onClick={() => {
+                      setRelEditOpen(false);
+                      setRelEditSchema([]);
+                      setRelEditValues({});
+                      setRelEditItemId(null);
+                      setRelEditAttachments([]);
+                      setRelEditNewFile(null);
+                    }}
+                    disabled={relEditSaving}
+                  >
+                    Cancelar
+                  </button>
+                </Stack>
+              </>
             )}
           </div>
         </Modal>

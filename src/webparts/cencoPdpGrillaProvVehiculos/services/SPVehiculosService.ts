@@ -7,6 +7,7 @@ import "@pnp/sp/fields";
 import "@pnp/sp/site-users/web";
 import "@pnp/sp/site-groups";
 import "@pnp/sp/views";
+import "@pnp/sp/attachments";
 
 import {
   IVehiculosService,
@@ -52,6 +53,7 @@ export class SPVehiculosService implements IVehiculosService {
     return this.sp.web.lists.getById(this.listId);
   }
 
+  // ===== Base (vehículos)
   public async getMeta(): Promise<ListMeta> {
     const [info, field] = await Promise.all([
       this.l().select("Id")() as Promise<{ Id: string }>,
@@ -92,7 +94,7 @@ export class SPVehiculosService implements IVehiculosService {
     return rows || [];
   }
 
-  // 👇 AHORA devuelve también listId
+  // 👉 ahora devuelve también listId (prop extra; compatible con la interfaz)
   public async getViewGrid(
     viewId: string,
     boolField?: string
@@ -111,7 +113,6 @@ export class SPVehiculosService implements IVehiculosService {
     let items = await this.listRawByView(viewId, boolField);
     items = await this.resolveLookupTexts(items, metas);
 
-    // 👈 devolvemos la lista base que ya tiene este service
     return { columns, items, listId: this.listId! };
   }
 
@@ -196,11 +197,10 @@ export class SPVehiculosService implements IVehiculosService {
   public async userInGroup(groupName: string): Promise<boolean> {
     const gps = await this.sp.web.currentUser.groups();
     const target = String(groupName).toLowerCase();
-    return (
-      gps?.some((g: { Title?: string }) => String(g?.Title).toLowerCase() === target) || false
-    );
+    return gps?.some((g: { Title?: string }) => String(g?.Title).toLowerCase() === target) || false;
   }
 
+  // ===== Metadatos (lista base)
   public async getViewFieldNames(viewId: string): Promise<string[]> {
     const view = this.l().views.getById(viewId);
     try {
@@ -274,42 +274,7 @@ export class SPVehiculosService implements IVehiculosService {
     id: number,
     schema: EditField[]
   ): Promise<Record<string, unknown>> {
-    const selects: string[] = [];
-    const expands: string[] = [];
-    for (const s of schema) {
-      const n = s.internalName;
-      if (s.type === "Lookup" || s.type === "User") {
-        selects.push(`${n}/Id`, `${n}/Title`);
-        expands.push(n);
-      } else {
-        selects.push(n);
-      }
-    }
-
-    const item = (await this.l()
-      .items.getById(id)
-      .select(...selects)
-      .expand(...expands)()) as Record<string, any>;
-
-    const values: Record<string, unknown> = {};
-    for (const s of schema) {
-      const n = s.internalName;
-      const v = item[n];
-      if (s.type === "Lookup" || s.type === "User") {
-        if (s.allowMultiple) {
-          const arr = Array.isArray(v) ? v : [];
-          values[n] = arr.map((x: any) => ({
-            key: Number(x?.Id),
-            text: String(x?.Title || ""),
-          }));
-        } else {
-          values[n] = v ? { key: Number(v.Id), text: String(v.Title || "") } : undefined;
-        }
-      } else {
-        values[n] = v;
-      }
-    }
-    return values;
+    return this.getItemValuesFromList(this.listId!, id, schema);
   }
 
   public async getLookupOptionsByListId(
@@ -327,31 +292,17 @@ export class SPVehiculosService implements IVehiculosService {
     schema: EditField[],
     values: Record<string, unknown>
   ): Promise<void> {
-    const body: Record<string, unknown> = {};
-    for (const s of schema) {
-      if (!(s.internalName in values) || s.readOnly) continue;
-      const n = s.internalName;
-      const val = values[n];
+    await this.updateFieldsInList(this.listId!, id, schema, values);
+  }
 
-      if (s.type === "Lookup" || s.type === "User") {
-        if (s.allowMultiple) {
-          const arr = Array.isArray(val) ? (val as Array<{ key: number }>).slice() : [];
-          body[`${n}Id`] = { results: arr.map((x) => Number(x.key)) };
-        } else {
-          const idVal =
-            val && (val as { key?: number }).key != null
-              ? Number((val as { key?: number }).key)
-              : null;
-          body[`${n}Id`] = idVal;
-        }
-      } else if (s.type === "MultiChoice") body[n] = Array.isArray(val) ? (val as string[]).slice() : [];
-      else if (s.type === "Boolean") body[n] = !!val;
-      else if (s.type === "Number" || s.type === "Currency")
-        body[n] = val === "" || val == null ? null : Number(val as number);
-      else if (s.type === "DateTime") body[n] = val ? new Date(String(val)) : null;
-      else body[n] = val as any;
-    }
-    await this.l().items.getById(id).update(body);
+  // 👇 NUEVO: lo usa el falso formulario para listas hijas
+  public async updateFieldsOnList(
+    listId: string,
+    id: number,
+    schema: EditField[],
+    values: Record<string, unknown>
+  ): Promise<void> {
+    await this.updateFieldsInList(listId, id, schema, values);
   }
 
   public async getTipoFormularioConfig(
@@ -377,12 +328,9 @@ export class SPVehiculosService implements IVehiculosService {
 
   public async listSiteLists(): Promise<SiteListRef[]> {
     const lists = await this.sp.web.lists.select("Id", "Title", "Hidden", "BaseTemplate")();
-    return (lists as any[])
-      .filter((l) => !l.Hidden)
-      .map((l) => ({ id: String(l.Id), title: String(l.Title) }));
+    return (lists as any[]).filter((l) => !l.Hidden).map((l) => ({ id: String(l.Id), title: String(l.Title) }));
   }
 
-  // 👇 la enriquecemos para que traiga todo lo que necesitamos
   public async getListFields(listId: string): Promise<FieldRef[]> {
     const fields = await this.sp.web.lists
       .getById(listId)
@@ -410,6 +358,7 @@ export class SPVehiculosService implements IVehiculosService {
       }));
   }
 
+  // ===== Relacionados
   public async getRelatedItems(params: {
     childListId: string;
     childField: string;
@@ -459,18 +408,15 @@ export class SPVehiculosService implements IVehiculosService {
       HtmlSchemaXml?: string;
     };
 
-    const names = await this.getViewFieldNamesFromList(list, childViewId);
+    // campos de la vista hija
+    const names = await this.getViewFieldNamesFromList(childListId, childViewId);
     const allNames = Array.from(new Set<string>(["ID", "Title", ...names]));
     const viewFields = allNames.map((n) => `<FieldRef Name='${n}'/>`).join("");
 
     const fld = (await list.fields
       .getByInternalNameOrTitle(childField)
       .select("InternalName", "TypeAsString")()) as { InternalName: string; TypeAsString: string };
-    const { fieldRefXml, valueXml } = this.buildEqCaml(
-      fld.InternalName,
-      fld.TypeAsString,
-      parentValue
-    );
+    const { fieldRefXml, valueXml } = this.buildEqCaml(fld.InternalName, fld.TypeAsString, parentValue);
 
     const baseQuery = v.ViewQuery || "";
     const eqXml = `<Eq>${fieldRefXml}${valueXml}</Eq>`;
@@ -494,8 +440,8 @@ export class SPVehiculosService implements IVehiculosService {
       allNames.map(async (n) => {
         const f = await list.fields.getByInternalNameOrTitle(n).select("InternalName", "Title")();
         return {
-          internal: String(f["InternalName"]),
-          title: String(f["Title"] || f["InternalName"]),
+          internal: String((f as any)["InternalName"]),
+          title: String((f as any)["Title"] || (f as any)["InternalName"]),
         };
       })
     );
@@ -511,6 +457,155 @@ export class SPVehiculosService implements IVehiculosService {
     return { columns, items: items as any[] };
   }
 
+  // ===== NUEVO: helpers públicos para mini-form en listas arbitrarias
+  public async getViewFieldNamesFromList(listId: string, viewId: string): Promise<string[]> {
+    const list = this.sp.web.lists.getById(listId);
+    return this.getViewFieldNamesFromListInternal(list, viewId);
+  }
+
+  public async getFieldsMetaFromList(listId: string, internalNames: string[]): Promise<EditField[]> {
+    const list = this.sp.web.lists.getById(listId);
+    const metas = await Promise.all(
+      internalNames.map(async (name) => {
+        const f = (await list.fields
+          .getByInternalNameOrTitle(name)
+          .select(
+            "InternalName",
+            "Title",
+            "TypeAsString",
+            "Required",
+            "ReadOnlyField",
+            "LookupList",
+            "AllowMultipleValues",
+            "Choices"
+          )()) as any;
+        const ef: EditField = {
+          internalName: f.InternalName,
+          title: f.Title,
+          type: f.TypeAsString,
+          required: !!f.Required,
+          readOnly: !!f.ReadOnlyField,
+          allowMultiple: !!f.AllowMultipleValues,
+          lookupListId: f.LookupList,
+          choices: f.Choices,
+        };
+        return ef;
+      })
+    );
+    return metas;
+  }
+
+  public async getItemValuesFromList(
+    listId: string,
+    id: number,
+    schema: EditField[]
+  ): Promise<Record<string, unknown>> {
+    const list = this.sp.web.lists.getById(listId);
+    const selects: string[] = [];
+    const expands: string[] = [];
+    for (const s of schema) {
+      const n = s.internalName;
+      if (s.type === "Lookup" || s.type === "User") {
+        selects.push(`${n}/Id`, `${n}/Title`);
+        expands.push(n);
+      } else {
+        selects.push(n);
+      }
+    }
+    const item = (await list.items.getById(id).select(...selects).expand(...expands)()) as Record<string, any>;
+    const values: Record<string, unknown> = {};
+    for (const s of schema) {
+      const n = s.internalName;
+      const v = item[n];
+      if (s.type === "Lookup" || s.type === "User") {
+        if (s.allowMultiple) {
+          const arr = Array.isArray(v) ? v : [];
+          values[n] = arr.map((x: any) => ({ key: Number(x?.Id), text: String(x?.Title || "") }));
+        } else {
+          values[n] = v ? { key: Number(v.Id), text: String(v.Title || "") } : undefined;
+        }
+      } else {
+        values[n] = v;
+      }
+    }
+    return values;
+  }
+
+  public async updateFieldsInList(
+    listId: string,
+    id: number,
+    schema: EditField[],
+    values: Record<string, unknown>
+  ): Promise<void> {
+    const list = this.sp.web.lists.getById(listId);
+    const body: Record<string, unknown> = {};
+    for (const s of schema) {
+      if (!(s.internalName in values) || s.readOnly) continue;
+      const n = s.internalName;
+      const val = values[n];
+
+      // LOOKUP / USER
+      if (s.type === "Lookup" || s.type === "User") {
+        // multivalor
+        if (s.allowMultiple) {
+          // puede venir [{key:1},{key:2}] o [1,2]
+          let ids: number[] = [];
+          if (Array.isArray(val)) {
+            ids = (val as any[]).map((x) =>
+              typeof x === "number" ? x : x && typeof x === "object" && "key" in x ? Number((x as any).key) : NaN
+            );
+            ids = ids.filter((n) => !isNaN(n));
+          }
+          body[`${n}Id`] = { results: ids };
+        } else {
+          // simple: acepto número o {key: n}
+          let idVal: number | null = null;
+          if (typeof val === "number") {
+            idVal = val;
+          } else if (val && typeof val === "object" && "key" in (val as any)) {
+            idVal = (val as any).key != null ? Number((val as any).key) : null;
+          }
+          body[`${n}Id`] = idVal;
+        }
+      } else if (s.type === "MultiChoice") {
+        body[n] = Array.isArray(val) ? (val as string[]).slice() : [];
+      } else if (s.type === "Boolean") {
+        body[n] = !!val;
+      } else if (s.type === "Number" || s.type === "Currency") {
+        body[n] = val === "" || val == null ? null : Number(val as number);
+      } else if (s.type === "DateTime") {
+        body[n] = val ? new Date(String(val)) : null;
+      } else {
+        body[n] = val as any;
+      }
+    }
+    await list.items.getById(id).update(body);
+  }
+
+  public async listAttachments(
+    listId: string,
+    id: number
+  ): Promise<Array<{ name: string; serverRelativeUrl: string }>> {
+    const atts = await this.sp.web.lists.getById(listId).items.getById(id).attachmentFiles();
+    return (atts || []).map((a: any) => ({ name: a.FileName, serverRelativeUrl: a.ServerRelativeUrl }));
+  }
+
+  public async replaceAttachment(listId: string, id: number, file: File): Promise<void> {
+    const item = this.sp.web.lists.getById(listId).items.getById(id);
+    try {
+      const current = await item.attachmentFiles();
+      if (current && current.length) {
+        for (const c of current) {
+          try {
+            await item.attachmentFiles.getByName(c.FileName).delete();
+          } catch {}
+        }
+      }
+    } catch {}
+    await item.attachmentFiles.add(file.name, file);
+  }
+
+  // ===== Helpers internos
   private inferColumnsFromItems(items: any[]): GridColumn[] {
     const first = items && items[0] ? items[0] : {};
     const keys = Object.keys(first).filter((k) => !/^odata|^Id$|^GUID$/i.test(k));
@@ -597,8 +692,7 @@ export class SPVehiculosService implements IVehiculosService {
             break;
           }
         }
-        if (m.allowMultiple)
-          (r as any)[m.internalName] = ids.map((id) => mapIds.get(id) ?? String(id));
+        if (m.allowMultiple) (r as any)[m.internalName] = ids.map((id) => mapIds.get(id) ?? String(id));
         else {
           const id = ids[0];
           (r as any)[m.internalName] = id != null ? mapIds.get(id) ?? String(id) : undefined;
@@ -608,7 +702,7 @@ export class SPVehiculosService implements IVehiculosService {
     });
   }
 
-  private async getViewFieldNamesFromList(list: any, viewId: string): Promise<string[]> {
+  private async getViewFieldNamesFromListInternal(list: any, viewId: string): Promise<string[]> {
     try {
       const raw: any = await (list.views.getById(viewId) as any).fields();
       const arr: string[] = Array.isArray(raw)
@@ -627,9 +721,7 @@ export class SPVehiculosService implements IVehiculosService {
           .map(normalizeViewName);
       }
     } catch {}
-    const info = (await list.views.getById(viewId).select("HtmlSchemaXml")()) as {
-      HtmlSchemaXml?: string;
-    };
+    const info = (await list.views.getById(viewId).select("HtmlSchemaXml")()) as { HtmlSchemaXml?: string };
     const xml = String(info?.HtmlSchemaXml || "");
     const matches = xml.match(/FieldRef\s+Name="([^"]+)"/g) || [];
     const parsed = matches

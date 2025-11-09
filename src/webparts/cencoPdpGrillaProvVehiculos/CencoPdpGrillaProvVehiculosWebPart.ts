@@ -42,6 +42,8 @@ export interface ICencoPdpGrillaProvVehiculosWebPartProps {
   relatedParentField?: string;
   relatedChildField?: string;
   relatedChildViewId?: string;
+  // 👉 NUEVO: vista de edición del hijo
+  relatedEditViewId?: string;
 }
 
 export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWebPart<ICencoPdpGrillaProvVehiculosWebPartProps> {
@@ -79,6 +81,8 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
     this.properties.relatedParentField ??= undefined;
     this.properties.relatedChildField ??= undefined;
     this.properties.relatedChildViewId ??= undefined;
+    // 👉 nuevo
+    this.properties.relatedEditViewId ??= undefined;
   }
 
   public render(): void {
@@ -104,6 +108,7 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
       relatedParentField,
       relatedChildField,
       relatedChildViewId,
+      relatedEditViewId,
     } = this.properties;
 
     if (!listId) {
@@ -144,6 +149,8 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
       relatedParentField,
       relatedChildField,
       relatedChildViewId,
+      // 👇 se lo pasamos al componente
+      relatedEditViewId,
     });
 
     ReactDom.render(element, this.domElement);
@@ -197,8 +204,10 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
     }
 
     if (prop === "relatedListId" && newVal !== oldVal) {
+      // cuando cambia la lista hija, reseteamos TODO lo que depende de ella
       this.properties.relatedChildViewId = undefined;
       this.properties.relatedChildField = undefined;
+      this.properties.relatedEditViewId = undefined; // 👈 también esta
 
       this._childViewOptions = [];
       this._childFieldOptionsChild = [];
@@ -230,6 +239,8 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
       "relatedParentField",
       "relatedChildField",
       "relatedChildViewId",
+      // 👇 agregamos la nueva para que re-renderice
+      "relatedEditViewId",
     ];
     if (_trackedProps.indexOf(prop) !== -1) {
       if (newVal !== oldVal) this.render();
@@ -376,13 +387,26 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
                   label: "Campo en la lista hija para igualar",
                   options: this._childFieldOptionsChild,
                   selectedKey: this.properties.relatedChildField,
-                  disabled: !this.properties.relatedListId || this._childFieldsLoadedFor !== this.properties.relatedListId,
+                  disabled:
+                    !this.properties.relatedListId ||
+                    this._childFieldsLoadedFor !== this.properties.relatedListId,
                 }),
                 PropertyPaneDropdown("relatedChildViewId", {
                   label: "Vista de la lista hija (para el modal)",
                   options: this._childViewOptions,
                   selectedKey: this.properties.relatedChildViewId,
-                  disabled: !this.properties.relatedListId || this._childViewsLoadedFor !== this.properties.relatedListId,
+                  disabled:
+                    !this.properties.relatedListId ||
+                    this._childViewsLoadedFor !== this.properties.relatedListId,
+                }),
+                // 👇 este es el que faltaba
+                PropertyPaneDropdown("relatedEditViewId", {
+                  label: "Vista de edición de la lista hija",
+                  options: this._childViewOptions,
+                  selectedKey: this.properties.relatedEditViewId,
+                  disabled:
+                    !this.properties.relatedListId ||
+                    this._childViewsLoadedFor !== this.properties.relatedListId,
                 }),
               ],
             },
