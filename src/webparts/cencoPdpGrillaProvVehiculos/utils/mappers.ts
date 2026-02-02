@@ -1,19 +1,41 @@
 import { Vehiculo, RawVehiculo } from "../models/types";
 
-export function dtoToVehiculos(rows: RawVehiculo[]): Vehiculo[] {
-  return (rows || []).map(r => {
-    const p = r.Proveedor as any;
-    const titles: string[] = Array.isArray(p)
-      ? p.map((x: any) => x?.Title).filter(Boolean)
-      : Array.isArray(p?.results)
-      ? p.results.map((x: any) => x?.Title).filter(Boolean)
-      : (p?.Title ? [p.Title] : []);
+type LookupItem = {
+  Id?: number;
+  Title?: string;
+};
 
-    const ids: number[] = Array.isArray(p)
-      ? p.map((x: any) => x.Id)
-      : Array.isArray(p?.results)
-      ? p.results.map((x: any) => x.Id)
-      : (p?.Id ? [p.Id] : []);
+type LookupResults = { results: LookupItem[] };
+
+type LookupValue = LookupItem | LookupItem[] | LookupResults | undefined;
+
+const isLookupResults = (v: unknown): v is LookupResults => {
+  if (!v || typeof v !== "object") return false;
+  if (!("results" in v)) return false;
+  const res = (v as { results?: unknown }).results;
+  return Array.isArray(res);
+};
+
+export function dtoToVehiculos(rows: RawVehiculo[]): Vehiculo[] {
+  return (rows || []).map((r) => {
+    const p = r.Proveedor as unknown as LookupValue;
+
+    let ids: number[] = [];
+    let titles: string[] = [];
+
+    if (Array.isArray(p)) {
+      ids = p.map((x) => x.Id).filter((x): x is number => typeof x === "number");
+      titles = p.map((x) => x.Title).filter((x): x is string => typeof x === "string" && x.length > 0);
+    } else if (isLookupResults(p)) {
+      ids = p.results.map((x) => x.Id).filter((x): x is number => typeof x === "number");
+      titles = p.results
+        .map((x) => x.Title)
+        .filter((x): x is string => typeof x === "string" && x.length > 0);
+    } else if (p && typeof p === "object") {
+      // LookupItem single
+      if (typeof p.Id === "number") ids = [p.Id];
+      if (typeof p.Title === "string" && p.Title.length > 0) titles = [p.Title];
+    }
 
     return {
       id: r.Id,

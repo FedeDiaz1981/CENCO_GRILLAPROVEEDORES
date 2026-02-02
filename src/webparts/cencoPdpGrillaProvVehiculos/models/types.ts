@@ -2,6 +2,8 @@
 
 export type Lookup = { Id: number; Title: string };
 
+export type ExtraFields = Record<string, unknown>;
+
 export type Vehiculo = {
   id: number;
   placa: string;
@@ -15,7 +17,7 @@ export type Vehiculo = {
   toggle?: boolean;
 
   // Permite acceder a cualquier otro campo devuelto por la vista
-  [key: string]: any;
+  [key: string]: unknown;
 };
 
 export type ListMeta = {
@@ -28,13 +30,18 @@ export type VehiculoDraft = {
   placa: string;
   marca?: string;
   modelo?: string;
-  proveedorId?: number | number[] | null;
+
+  // null NO (regla rush). Si querés “vacío”, usá undefined.
+  proveedorId?: number | number[];
 };
 
 export type FieldProveedorInfo = {
   LookupList?: string;
   AllowMultipleValues?: boolean;
 };
+
+export type LookupItem = { Id?: number; Title?: string };
+export type LookupBag = { results: Array<LookupItem> };
 
 export type RawVehiculo = {
   Id: number;
@@ -43,13 +50,10 @@ export type RawVehiculo = {
   modelo?: string;
 
   // Proveedor puede venir como objeto, array o {results:[]}
-  Proveedor?:
-    | { Id?: number; Title?: string }
-    | Array<{ Id: number; Title?: string }>
-    | { results: Array<{ Id: number; Title?: string }> };
+  Proveedor?: LookupItem | Array<LookupItem> | LookupBag;
 
   // Otros campos crudos que traiga la consulta
-  [key: string]: any;
+  [key: string]: unknown;
 };
 
 // ===== Semáforo =====
