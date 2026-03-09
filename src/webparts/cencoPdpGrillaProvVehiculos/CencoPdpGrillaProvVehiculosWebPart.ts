@@ -46,6 +46,7 @@ export interface ICencoPdpGrillaProvVehiculosWebPartProps {
   relatedEditViewId?: string;
 
   allowRelatedEdit?: boolean;
+  allowRelatedDownloadAttachments?: boolean;
 
   // ===== Modal de aprobación (PropertyPane) =====
   enableApproveModal?: boolean;
@@ -185,6 +186,7 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
     this.properties.relatedEditViewId ??= undefined;
 
     this.properties.allowRelatedEdit ??= true;
+    this.properties.allowRelatedDownloadAttachments ??= false;
     this.properties.showDownloadAttachments ??= true;
 
     // ===== Defaults Aprobación =====
@@ -259,6 +261,7 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
       relatedChildViewId,
       relatedEditViewId,
       allowRelatedEdit = true,
+      allowRelatedDownloadAttachments = false,
       showDownloadAttachments = true,
 
       // ===== PropertyPane Aprobación =====
@@ -324,6 +327,7 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
           relatedChildViewId: relatedChildViewIdNorm,
           relatedEditViewId: relatedEditViewIdNorm,
           allowRelatedEdit,
+          allowRelatedDownloadAttachments,
           listId: listIdNorm,
           showDownloadAttachments,
 
@@ -498,6 +502,7 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
       "relatedChildViewId",
       "relatedEditViewId",
       "allowRelatedEdit",
+      "allowRelatedDownloadAttachments",
       "showDownloadAttachments",
 
       // Aprobación
@@ -933,6 +938,10 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
                 PropertyPaneCheckbox("allowRelatedEdit", {
                   text: "Edición documentos",
                   checked: this.properties.allowRelatedEdit,
+                }),
+                PropertyPaneCheckbox("allowRelatedDownloadAttachments", {
+                  text: "Descargar adjuntos",
+                  checked: this.properties.allowRelatedDownloadAttachments,
                 }),
               ],
             },

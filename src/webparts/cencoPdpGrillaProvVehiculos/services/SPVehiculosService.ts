@@ -34,6 +34,7 @@ import type {
 } from "../models/types";
 
 import { dtoToVehiculos } from "../utils/mappers";
+import { normalizeBooleanValue } from "../utils/booleans";
 
 /** =========================
  * Tipos internos
@@ -169,14 +170,6 @@ const extractStringArray = (raw: unknown): string[] => {
     }
   }
   return [];
-};
-
-const normalizeBoolValue = (v: unknown): boolean => {
-  if (v === true) return true;
-  if (v === false) return false;
-  if (v === 1 || v === "1" || v === "true" || v === "TRUE") return true;
-  if (v === 0 || v === "0" || v === "false" || v === "FALSE") return false;
-  return Boolean(v);
 };
 
 export class SPVehiculosService implements IVehiculosService {
@@ -423,7 +416,7 @@ export class SPVehiculosService implements IVehiculosService {
     const rows: GridRow[] = Array.isArray(rowsUnknown) ? (rowsUnknown as GridRow[]) : [];
 
     if (boolField) {
-      for (const r of rows) r[boolField] = normalizeBoolValue(r[boolField]);
+      for (const r of rows) r[boolField] = normalizeBooleanValue(r[boolField]);
     }
 
     return this.resolveLookupTexts(rows, metas);
@@ -578,7 +571,7 @@ export class SPVehiculosService implements IVehiculosService {
       const rows: GridRow[] = Array.isArray(data?.Row) ? data.Row : [];
 
       if (boolField) {
-        for (const r of rows) r[boolField] = normalizeBoolValue(r[boolField]);
+        for (const r of rows) r[boolField] = normalizeBooleanValue(r[boolField]);
       }
 
       const items = await this.resolveLookupTexts(rows, metas);
@@ -653,7 +646,7 @@ export class SPVehiculosService implements IVehiculosService {
           : [];
 
         const toggle = boolField
-          ? normalizeBoolValue((r as Record<string, unknown>)[boolField])
+          ? normalizeBooleanValue((r as Record<string, unknown>)[boolField])
           : undefined;
 
         return {
@@ -680,7 +673,7 @@ export class SPVehiculosService implements IVehiculosService {
     if (boolField) {
       for (let i = 0; i < mapped.length; i++) {
         const row = data[i] as unknown as Record<string, unknown>;
-        mapped[i].toggle = normalizeBoolValue(row[boolField]);
+        mapped[i].toggle = normalizeBooleanValue(row[boolField]);
       }
     }
     return mapped;
@@ -1123,7 +1116,7 @@ export class SPVehiculosService implements IVehiculosService {
       } else if (s.type === "MultiChoice") {
         bodyObj[n] = Array.isArray(val) ? (val as string[]).slice() : [];
       } else if (s.type === "Boolean") {
-        bodyObj[n] = normalizeBoolValue(val);
+        bodyObj[n] = normalizeBooleanValue(val);
       } else if (s.type === "Number" || s.type === "Currency") {
         if (val === "" || val === undefined) bodyObj[n] = undefined;
         else {
@@ -1273,7 +1266,7 @@ export class SPVehiculosService implements IVehiculosService {
     if (t(typeAsString) === "boolean") {
       return {
         fieldRefXml: `<FieldRef Name='${fieldInternal}' />`,
-        valueXml: `<Value Type='Boolean'>${value ? 1 : 0}</Value>`,
+        valueXml: `<Value Type='Boolean'>${normalizeBooleanValue(value) ? 1 : 0}</Value>`,
       };
     }
 

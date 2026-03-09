@@ -31,6 +31,7 @@ import { IVehiculosService, EditField } from "../services/IVehiculosService";
 import type { ParentValue } from "../services/IVehiculosService";
 import { Vehiculo } from "../models/types";
 import { useVehiculosGrid } from "../hooks/useVehiculosGrid";
+import { normalizeBooleanValue } from "../utils/booleans";
 
 type RowItem = Record<string, unknown> & {
   id?: number;
@@ -340,6 +341,7 @@ type Props = {
   relatedChildViewId?: string;
   relatedEditViewId?: string;
   allowRelatedEdit?: boolean;
+  allowRelatedDownloadAttachments?: boolean;
 
   showDownloadAttachments?: boolean;
   listId: string;
@@ -478,6 +480,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     relatedChildViewId,
     relatedEditViewId,
     allowRelatedEdit = false,
+    allowRelatedDownloadAttachments = false,
 
     listId,
     showDownloadAttachments = true,
@@ -880,6 +883,65 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     return undefined;
   }, []);
 
+  const parseDateForDisplay = React.useCallback((value: unknown): Date | undefined => {
+    if (value === undefined || value === null) return undefined;
+
+    const text = String(value).trim();
+    if (!text) return undefined;
+
+    const isoLike =
+      /^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(text);
+    if (isoLike) {
+      const year = Number(isoLike[1]);
+      const month = Number(isoLike[2]);
+      const day = Number(isoLike[3]);
+      const hour = Number(isoLike[4] || 0);
+      const minute = Number(isoLike[5] || 0);
+      const second = Number(isoLike[6] || 0);
+      const date = new Date(year, month - 1, day, hour, minute, second);
+      return Number.isNaN(date.getTime()) ? undefined : date;
+    }
+
+    const latamLike =
+      /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/.exec(text);
+    if (latamLike) {
+      const day = Number(latamLike[1]);
+      const month = Number(latamLike[2]);
+      const year = Number(latamLike[3]);
+      const date = new Date(year, month - 1, day);
+      return Number.isNaN(date.getTime()) ? undefined : date;
+    }
+
+    const fallback = new Date(text);
+    return Number.isNaN(fallback.getTime()) ? undefined : fallback;
+  }, []);
+
+  const formatDateOnly = React.useCallback(
+    (value: unknown): string => {
+      const parsed = parseDateForDisplay(value);
+      if (!parsed) return renderCellText(value);
+
+      const day = parsed.getDate() < 10 ? `0${parsed.getDate()}` : String(parsed.getDate());
+      const month =
+        parsed.getMonth() + 1 < 10
+          ? `0${parsed.getMonth() + 1}`
+          : String(parsed.getMonth() + 1);
+
+      return `${day}/${month}/${parsed.getFullYear()}`;
+    },
+    [parseDateForDisplay, renderCellText]
+  );
+
+  const trimCalculatedDecimals = React.useCallback(
+    (value: unknown): string => {
+      const text = renderCellText(value).trim();
+      if (!/^-?\d+\.\d+$/.test(text)) return text;
+
+      return text.replace(/(\.\d*?[1-9])0+$/u, "$1").replace(/\.0+$/u, "");
+    },
+    [renderCellText]
+  );
+
   const getSortable = React.useCallback(
     (v: unknown): string | number => {
       if (v === null || v === undefined) return "";
@@ -1276,6 +1338,8 @@ const VehiculosGrid: React.FC<Props> = (props) => {
   const [relBusy, setRelBusy] = React.useState(false);
   const [relCols, setRelCols] = React.useState<IColumn[]>([]);
   const [relItems, setRelItems] = React.useState<RowItem[]>([]);
+  const [relFieldTypes, setRelFieldTypes] = React.useState<Record<string, string>>({});
+  const [relHasAttachments, setRelHasAttachments] = React.useState<Record<number, boolean>>({});
   const [relParentValue, setRelParentValue] = React.useState<ParentValue | undefined>(undefined);
 
   const [relEditOpen, setRelEditOpen] = React.useState(false);
@@ -1624,13 +1688,13 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     runApproval,
   ]);
 
-  const descargarAdjuntos = React.useCallback(
-    async (row: RowItem): Promise<void> => {
+  const descargarAdjuntosDesdeLista = React.useCallback(
+    async (targetListId: string, row: RowItem): Promise<void> => {
       const id = getRowId(row);
       if (!id) return;
 
       try {
-        const atts = await service.listAttachments(listId, id);
+        const atts = await service.listAttachments(targetListId, id);
 
         if (!atts || !atts.length) {
           alert("Este registro no tiene adjuntos.");
@@ -1651,7 +1715,93 @@ const VehiculosGrid: React.FC<Props> = (props) => {
         alert("No se pudieron descargar los adjuntos.");
       }
     },
-    [listId, service]
+    [service]
+  );
+
+  const descargarAdjuntos = React.useCallback(
+    async (row: RowItem): Promise<void> => {
+      await descargarAdjuntosDesdeLista(listId, row);
+    },
+    [descargarAdjuntosDesdeLista, listId]
+  );
+
+  const descargarAdjuntosRelacionados = React.useCallback(
+    async (row: RowItem): Promise<void> => {
+      const targetListId = relEditListId ?? relatedListId;
+      if (!targetListId) return;
+
+      await descargarAdjuntosDesdeLista(targetListId, row);
+    },
+    [descargarAdjuntosDesdeLista, relEditListId, relatedListId]
+  );
+
+  const loadRelatedFieldTypes = React.useCallback(
+    async (childListId: string, cols: IColumn[]): Promise<Record<string, string>> => {
+      const fieldNames = cols
+        .map((c) => String(c.fieldName ?? c.key ?? "").trim())
+        .filter((name) => name.length > 0);
+
+      if (!fieldNames.length) return {};
+
+      const wanted = new Set(fieldNames.map((name) => name.toLowerCase()));
+      const allFields = await service.getListFields(childListId);
+      const next: Record<string, string> = {};
+
+      allFields.forEach((field) => {
+        if (wanted.has(field.internalName.toLowerCase())) {
+          next[field.internalName] = field.type;
+        }
+      });
+
+      return next;
+    },
+    [service]
+  );
+
+  const loadRelatedAttachmentFlags = React.useCallback(
+    async (childListId: string, items: RowItem[]): Promise<Record<number, boolean>> => {
+      const pairs = await Promise.all(
+        items.map(async (item): Promise<[number, boolean] | undefined> => {
+          const id = getRowId(item);
+          if (id === undefined) return undefined;
+
+          const rawValue = item.Attachments;
+          if (rawValue !== undefined) {
+            return [id, normalizeBooleanValue(rawValue)];
+          }
+
+          try {
+            const fields = await service.getItemFieldsFromList(childListId, id, ["Attachments"]);
+            return [id, normalizeBooleanValue(fields.Attachments)];
+          } catch {
+            return [id, false];
+          }
+        })
+      );
+
+      const next: Record<number, boolean> = {};
+      pairs.forEach((pair) => {
+        if (!pair) return;
+        next[pair[0]] = pair[1];
+      });
+
+      return next;
+    },
+    [service]
+  );
+
+  const renderRelatedCellText = React.useCallback(
+    (fieldName: string | undefined, value: unknown): string => {
+      const key = String(fieldName || "").trim();
+      const fieldType = key ? relFieldTypes[key] : undefined;
+
+      if (fieldType === "DateTime") return formatDateOnly(value);
+      if (fieldType === "Calculated") return trimCalculatedDecimals(value);
+      if (fieldType === "Boolean") return normalizeBooleanValue(value) ? "Si" : "No";
+
+      return renderCellText(value);
+    },
+    [relFieldTypes, formatDateOnly, trimCalculatedDecimals, renderCellText]
   );
 
   const openRelated = React.useCallback(
@@ -1662,6 +1812,8 @@ const VehiculosGrid: React.FC<Props> = (props) => {
       setRelParentValue(parentValue);
       setRelOpen(true);
       setRelBusy(true);
+      setRelFieldTypes({});
+      setRelHasAttachments({});
 
       try {
         if (relatedChildViewId) {
@@ -1682,8 +1834,14 @@ const VehiculosGrid: React.FC<Props> = (props) => {
             }))
           );
 
+          const fieldTypes = await loadRelatedFieldTypes(relatedListId, cols);
+          const attachmentFlags = allowRelatedDownloadAttachments
+            ? await loadRelatedAttachmentFlags(relatedListId, items as RowItem[])
+            : {};
           setRelCols(cols);
           setRelItems(items as RowItem[]);
+          setRelFieldTypes(fieldTypes);
+          setRelHasAttachments(attachmentFlags);
           setRelEditListId(relatedListId);
         } else {
           const { columns, items } = await service.getRelatedItems({
@@ -1702,8 +1860,14 @@ const VehiculosGrid: React.FC<Props> = (props) => {
             }))
           );
 
+          const fieldTypes = await loadRelatedFieldTypes(relatedListId, cols);
+          const attachmentFlags = allowRelatedDownloadAttachments
+            ? await loadRelatedAttachmentFlags(relatedListId, items as RowItem[])
+            : {};
           setRelCols(cols);
           setRelItems(items as RowItem[]);
+          setRelFieldTypes(fieldTypes);
+          setRelHasAttachments(attachmentFlags);
           setRelEditListId(relatedListId);
         }
       } finally {
@@ -1717,6 +1881,9 @@ const VehiculosGrid: React.FC<Props> = (props) => {
       relatedChildField,
       relatedChildViewId,
       filterOutIdCols,
+      allowRelatedDownloadAttachments,
+      loadRelatedAttachmentFlags,
+      loadRelatedFieldTypes,
     ]
   );
 
@@ -1996,6 +2163,9 @@ const VehiculosGrid: React.FC<Props> = (props) => {
           // display
           if (!isEditing) {
             if (meta?.type === "Boolean") {
+              const booleanText = normalizeBooleanValue(rawVal) ? "Si" : "No";
+              return <span>{booleanText}</span>;
+              return <span>{normalizeBooleanValue(rawVal) ? "SÃ­" : "No"}</span>;
               const b =
                 rawVal === true ||
                 rawVal === 1 ||
@@ -2045,6 +2215,46 @@ const VehiculosGrid: React.FC<Props> = (props) => {
             const t = meta.type;
 
             if (t === "Boolean") {
+              const normalizedDraftValue = (s.draft as unknown as Record<string, unknown>)?.[
+                fieldName
+              ];
+              const normalizedCurrentValue =
+                normalizedDraftValue !== undefined
+                  ? normalizeBooleanValue(normalizedDraftValue)
+                  : normalizeBooleanValue(rawVal);
+
+              return (
+                <Dropdown
+                  options={[
+                    { key: "true", text: "Si" },
+                    { key: "false", text: "No" },
+                  ]}
+                  selectedKey={normalizedCurrentValue ? "true" : "false"}
+                  onChange={(_, opt) =>
+                    updateDraft({ [fieldName]: opt?.key === "true" } as Record<string, unknown>)
+                  }
+                />
+              );
+
+              const draftValue = (s.draft as unknown as Record<string, unknown>)?.[fieldName];
+              const currentValue =
+                draftValue !== undefined
+                  ? normalizeBooleanValue(draftValue)
+                  : normalizeBooleanValue(rawVal);
+
+              return (
+                <Dropdown
+                  options={[
+                    { key: "true", text: "SÃ­" },
+                    { key: "false", text: "No" },
+                  ]}
+                  selectedKey={currentValue ? "true" : "false"}
+                  onChange={(_, opt) =>
+                    updateDraft({ [fieldName]: opt?.key === "true" } as Record<string, unknown>)
+                  }
+                />
+              );
+
               const draft = (s.draft as unknown as Record<string, unknown>)?.[fieldName];
               const current =
                 draft ??
@@ -2492,6 +2702,13 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     );
   };
 
+  const hasDownloadableRelatedItems =
+    allowRelatedDownloadAttachments &&
+    relItems.some((item) => {
+      const id = getRowId(item);
+      return id !== undefined && relHasAttachments[id] === true;
+    });
+
   return (
     <div className="cnco-vehiculos-shell">
       <ThemeProvider theme={appTheme}>
@@ -2715,19 +2932,47 @@ const VehiculosGrid: React.FC<Props> = (props) => {
                           isResizable: true,
                         }))
                       ),
-                      {
-                        key: "relActions",
-                        name: "Acciones",
-                        minWidth: allowRelatedEdit ? 90 : 0,
-                        onRender: (it?: unknown) =>
-                          it && allowRelatedEdit ? (
-                            <IconButton
-                              iconProps={{ iconName: "Edit" }}
-                              title="Editar"
-                              onClick={() => openRelatedEdit(it as RowItem)}
-                            />
-                          ) : undefined,
-                      },
+                      ...(allowRelatedEdit || hasDownloadableRelatedItems
+                        ? [
+                            {
+                              key: "relActions",
+                              name: "Acciones",
+                              minWidth:
+                                (allowRelatedEdit ? 44 : 0) + (hasDownloadableRelatedItems ? 44 : 0),
+                              onRender: (it?: unknown) => {
+                                if (!it) return undefined;
+
+                                const row = it as RowItem;
+                                const rowId = getRowId(row);
+                                const canDownload =
+                                  rowId !== undefined && relHasAttachments[rowId] === true;
+
+                                if (!allowRelatedEdit && !canDownload) return undefined;
+
+                                return (
+                                  <Stack horizontal tokens={{ childrenGap: 4 }}>
+                                    {allowRelatedEdit && (
+                                      <IconButton
+                                        iconProps={{ iconName: "Edit" }}
+                                        title="Editar"
+                                        onClick={() => openRelatedEdit(row)}
+                                      />
+                                    )}
+                                    {canDownload && (
+                                      <IconButton
+                                        iconProps={{ iconName: "Download" }}
+                                        title="Descargar adjuntos"
+                                        onClick={() =>
+                                          descargarAdjuntosRelacionados(row).catch(() => {})
+                                        }
+                                      />
+                                    )}
+                                  </Stack>
+                                );
+                              },
+                            } as IColumn,
+                          ]
+                        : []),
                     ]}
                     selectionMode={SelectionMode.none}
                     constrainMode={ConstrainMode.horizontalConstrained}
@@ -2738,7 +2983,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
                       const row = item as RowItem;
                       const v = row[col.fieldName ?? col.key];
-                      return renderCellText(v);
+                      return renderRelatedCellText(col.fieldName ?? col.key, v);
                     }}
                   />
                 </div>
@@ -2893,6 +3138,46 @@ const VehiculosGrid: React.FC<Props> = (props) => {
                       }
 
                       if (f.type === "Boolean") {
+                        const normalizedCurrentValue = normalizeBooleanValue(val);
+                        return (
+                          <Dropdown
+                            key={f.internalName}
+                            label={f.title}
+                            options={[
+                              { key: "true", text: "Si" },
+                              { key: "false", text: "No" },
+                            ]}
+                            selectedKey={normalizedCurrentValue ? "true" : "false"}
+                            onChange={(_, opt) =>
+                              setRelEditValues((prev) => ({
+                                ...prev,
+                                [f.internalName]: opt?.key === "true",
+                              }))
+                            }
+                            styles={{ root: { marginBottom: 10 } }}
+                          />
+                        );
+
+                        const currentValue = normalizeBooleanValue(val);
+                        return (
+                          <Dropdown
+                            key={f.internalName}
+                            label={f.title}
+                            options={[
+                              { key: "true", text: "SÃ­" },
+                              { key: "false", text: "No" },
+                            ]}
+                            selectedKey={currentValue ? "true" : "false"}
+                            onChange={(_, opt) =>
+                              setRelEditValues((prev) => ({
+                                ...prev,
+                                [f.internalName]: opt?.key === "true",
+                              }))
+                            }
+                            styles={{ root: { marginBottom: 10 } }}
+                          />
+                        );
+
                         const current =
                           val === true || val === 1 || val === "1" || val === "true" || val === "TRUE";
                         return (
@@ -3014,6 +3299,11 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
                               setRelCols(cols);
                               setRelItems(items as RowItem[]);
+                              setRelHasAttachments(
+                                allowRelatedDownloadAttachments
+                                  ? await loadRelatedAttachmentFlags(relatedListId, items as RowItem[])
+                                  : {}
+                              );
                             } else {
                               const { columns, items } = await service.getRelatedItems({
                                 childListId: relatedListId,
@@ -3033,6 +3323,11 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
                               setRelCols(cols);
                               setRelItems(items as RowItem[]);
+                              setRelHasAttachments(
+                                allowRelatedDownloadAttachments
+                                  ? await loadRelatedAttachmentFlags(relatedListId, items as RowItem[])
+                                  : {}
+                              );
                             }
                           }
 
