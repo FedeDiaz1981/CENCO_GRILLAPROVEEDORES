@@ -73,6 +73,7 @@ export interface ICencoPdpGrillaProvVehiculosWebPartProps {
   gridTitle?: string;
   gridCollapsible?: boolean;
   gridDefaultCollapsed?: boolean;
+  gridLazyLoad?: boolean;
 
   // ===== NUEVO: Estilo del título =====
   gridTitleFontSize?: number; // px
@@ -90,6 +91,9 @@ const createNotConfiguredElement = (): React.ReactElement =>
 
 export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWebPart<ICencoPdpGrillaProvVehiculosWebPartProps> {
   private _sp!: SPFI;
+  private readonly _instanceKey: string = `grilla-${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
 
   private _listOptions: IPropertyPaneDropdownOption[] = [];
   private _viewOptions: IPropertyPaneDropdownOption[] = [];
@@ -156,8 +160,8 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
   }
 
   private _normAndStoreProp(prop: keyof ICencoPdpGrillaProvVehiculosWebPartProps): void {
-    const v = (this.properties as any)[prop];
-    (this.properties as any)[prop] = this._normGuid(v);
+    const v = this.properties[prop];
+    this.properties[prop] = this._normGuid(v) as never;
   }
 
   protected async onInit(): Promise<void> {
@@ -214,6 +218,7 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
     this.properties.gridTitle ??= "";
     this.properties.gridCollapsible ??= false;
     this.properties.gridDefaultCollapsed ??= false;
+    this.properties.gridLazyLoad ??= true;
 
     // ===== Defaults Estilo título =====
     this.properties.gridTitleFontSize ??= 16;
@@ -289,6 +294,7 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
       gridTitle = "",
       gridCollapsible = false,
       gridDefaultCollapsed = false,
+      gridLazyLoad = true,
 
       // ===== UI: estilo título =====
       gridTitleFontSize = 16,
@@ -330,6 +336,8 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
           allowRelatedDownloadAttachments,
           listId: listIdNorm,
           showDownloadAttachments,
+          gridLazyLoad,
+          instanceKey: this._instanceKey,
 
           // ✅ UI (título + colapsable)
           gridTitle,
@@ -430,7 +438,7 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
       prop === "relatedEditViewId"
     ) {
       const norm = this._normGuid(newVal);
-      (this.properties as any)[prop] = norm;
+      this.properties[prop] = norm as never;
       newVal = norm;
     }
 

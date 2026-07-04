@@ -22,6 +22,7 @@ export type Options = {
   prefetchThreshold?: number; // default 10
   timeoutMs?: number;         // default 25000
   debug?: boolean;            // default false
+  enabled?: boolean;          // default true
 };
 
 type DebugState = {
@@ -88,6 +89,7 @@ export function usePagedViewGrid<TItem = Record<string, unknown>>(
     prefetchThreshold = 10,
     timeoutMs = 25000,
     debug: debugOn = false,
+    enabled = true,
   } = opts;
 
   const [columns, setColumns] = React.useState<IColumn[] | undefined>(undefined);
@@ -136,8 +138,15 @@ export function usePagedViewGrid<TItem = Record<string, unknown>>(
     dlog("RESET");
   }, [dlog]);
 
+  const guardDisabled = React.useCallback((): boolean => !enabled, [enabled]);
+
   const fetchBatchFn = React.useCallback(
     (initial: boolean): Promise<void> => {
+      if (guardDisabled()) {
+        dlog("FETCH skipped: disabled");
+        return Promise.resolve();
+      }
+
       if (!viewId) {
         dlog("FETCH skipped: no viewId");
         return Promise.resolve();
@@ -220,21 +229,27 @@ export function usePagedViewGrid<TItem = Record<string, unknown>>(
       inflightRef.current = p;
       return p;
     },
-    [viewId, toggleField, fetchBatch, timeoutMs, dlog]
+    [viewId, toggleField, fetchBatch, timeoutMs, dlog, guardDisabled]
   );
 
   // ✅ init SOLO por viewId/toggleField (no por cambio de getPaged/sort)
   React.useEffect((): void => {
+    if (!enabled) {
+      reset();
+      return;
+    }
+
     if (!viewId) {
       reset();
       return;
     }
     reset();
     fetchBatchFn(true).catch(() => {});
-  }, [viewId, toggleField, reset, fetchBatchFn]);
+  }, [enabled, viewId, toggleField, reset, fetchBatchFn]);
 
   const ensureForPage = React.useCallback(
     async (targetPageIndex: number): Promise<void> => {
+      if (guardDisabled()) return;
       if (!viewId) return;
 
       if (inflightRef.current) await inflightRef.current;
@@ -257,7 +272,7 @@ export function usePagedViewGrid<TItem = Record<string, unknown>>(
         fetchBatchFn(false).catch(() => {});
       }
     },
-    [viewId, uiPageSize, prefetchThreshold, fetchBatchFn]
+    [viewId, uiPageSize, prefetchThreshold, fetchBatchFn, guardDisabled]
   );
 
   const totalLoaded = buffer.length;
@@ -271,10 +286,12 @@ export function usePagedViewGrid<TItem = Record<string, unknown>>(
   const canGoNext = nextToken !== undefined || (pageIndex + 1) * uiPageSize < buffer.length;
 
   const goPrev = React.useCallback((): void => {
+    if (guardDisabled()) return;
     setPageIndex((p) => Math.max(0, p - 1));
-  }, []);
+  }, [guardDisabled]);
 
   const goNext = React.useCallback(async (): Promise<void> => {
+    if (guardDisabled()) return;
     if (!canGoNext) return;
 
     const next = pageIndex + 1;
@@ -283,9 +300,14 @@ export function usePagedViewGrid<TItem = Record<string, unknown>>(
     const start = next * uiPageSize;
     const hasData = start < bufferRef.current.length || nextTokenRef.current !== undefined;
     if (hasData) setPageIndex(next);
-  }, [canGoNext, pageIndex, uiPageSize, ensureForPage]);
+  }, [canGoNext, pageIndex, uiPageSize, ensureForPage, guardDisabled]);
 
   const refresh = React.useCallback(async (): Promise<void> => {
+    if (guardDisabled()) {
+      reset();
+      return;
+    }
+
     if (!viewId) return;
 
     setPageIndex(0);
@@ -297,7 +319,7 @@ export function usePagedViewGrid<TItem = Record<string, unknown>>(
     nextTokenRef.current = undefined;
 
     await fetchBatchFn(true);
-  }, [viewId, fetchBatchFn]);
+  }, [viewId, fetchBatchFn, guardDisabled, reset]);
 
   return {
     columns,

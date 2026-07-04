@@ -12,6 +12,12 @@ type RowLike = Partial<Vehiculo> & {
   Title?: string;
 };
 
+type GridRowLike = Vehiculo & Record<string, unknown>;
+
+type PagedService = IVehiculosService & {
+  getViewGridPaged?: NonNullable<IVehiculosService["getViewGridPaged"]>;
+};
+
 type State = {
   items: Array<Vehiculo & Record<string, unknown>>;
   meta?: ListMeta;
@@ -48,9 +54,14 @@ type HookReturn = {
   toggleActive: (v: Vehiculo) => Promise<void>;
 };
 
+type HookOptions = {
+  enabled?: boolean;
+  instanceKey?: string;
+};
+
 const UI_PAGE_SIZE = 10;
-const FETCH_BATCH = 30;
-const PREFETCH_THRESHOLD = 10;
+const FETCH_BATCH = 15;
+const PREFETCH_THRESHOLD = 5;
 
 export function useVehiculosGrid(
   svc: IVehiculosService,
@@ -58,8 +69,10 @@ export function useVehiculosGrid(
   viewId?: string,
   toggleField?: string,
   sortField?: string,
-  sortDesc?: boolean
+  sortDesc?: boolean,
+  options: HookOptions = {}
 ): HookReturn {
+  const { enabled = true } = options;
   // -------------------------
   // Helpers
   // -------------------------
@@ -72,8 +85,8 @@ export function useVehiculosGrid(
   );
 
   const hasPaged = React.useMemo(() => {
-    const anySvc = svc as any;
-    return typeof anySvc.getViewGridPaged === "function";
+    const pagedSvc = svc as PagedService;
+    return typeof pagedSvc.getViewGridPaged === "function";
   }, [svc]);
 
   const getPaged = React.useCallback(
@@ -87,26 +100,27 @@ export function useVehiculosGrid(
     ) => {
       // Fallback: sin paginado server, traigo la vista entera (como antes)
       if (!hasPaged) {
-        const grid = await svc.getViewGrid(vId, boolField);
+        const grid = await svc.getViewGrid(vId, boolField, { resolveLookups: false });
         return {
           columns: grid.columns as unknown as IColumn[],
-          items: grid.items as any[],
+          items: grid.items as GridRowLike[],
           nextToken: undefined as string | undefined,
         };
       }
 
-      const res = await (svc as any).getViewGridPaged(
+      const res = await (svc as PagedService).getViewGridPaged!(
         vId,
         pageSize,
         token,
         boolField,
         sField,
-        sDesc
+        sDesc,
+        { resolveLookups: false }
       );
 
       return {
         columns: res.columns as unknown as IColumn[],
-        items: res.items as any[],
+        items: res.items as GridRowLike[],
         nextToken: res.nextToken as string | undefined,
       };
     },
@@ -134,6 +148,7 @@ export function useVehiculosGrid(
     fetchBatch: FETCH_BATCH,
     uiPageSize: UI_PAGE_SIZE,
     prefetchThreshold: PREFETCH_THRESHOLD,
+    enabled,
   });
 
   // -------------------------
@@ -163,19 +178,25 @@ export function useVehiculosGrid(
   }, [svc, editGroupName]);
 
   React.useEffect(() => {
+    if (!enabled) return;
     refresh().catch(() => {});
-  }, [refresh]);
+  }, [enabled, refresh]);
 
   // -------------------------
   // Cuando cambia viewId/toggle/sort => reseteo paged
   // -------------------------
   React.useEffect(() => {
+    if (!enabled) {
+      paged.reset();
+      return;
+    }
+
     if (!viewId) return;
 
     paged.reset();
     paged.refresh().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewId, toggleField, sortField, sortDesc]);
+  }, [enabled, viewId, toggleField, sortField, sortDesc]);
 
   // -------------------------
   // Sync de items desde paged (solo si viewId está)

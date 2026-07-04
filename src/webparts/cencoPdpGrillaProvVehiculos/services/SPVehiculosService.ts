@@ -18,6 +18,8 @@ import type {
   IVehiculosService,
   ApprovalStatus,
   EditField,
+  ViewGridOptions,
+  LookupHydrationResult,
   SemaforoConfig,
   GridColumn,
   SiteListRef,
@@ -46,6 +48,8 @@ interface ViewInfoLite {
   RowLimit?: number;
   HtmlSchemaXml?: string;
 }
+
+type RenderListDataQuery = Parameters<typeof spPost>[0];
 
 type CacheEntry<T> = { value: Promise<T>; ts: number };
 
@@ -79,7 +83,21 @@ class SimplePromiseCache {
   }
 }
 
-const GLOBAL_CACHE = new SimplePromiseCache(10 * 60 * 1000);
+const SHARED_CACHE = new SimplePromiseCache(10 * 60 * 1000);
+
+const perfEnabled = (): boolean => {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem("cncoGridPerf") === "1";
+  } catch {
+    return false;
+  }
+};
+
+const perfNow = (): number =>
+  typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
 
 /** =========================
  * RenderListDataAsStream paging token helpers
@@ -206,6 +224,23 @@ export class SPVehiculosService implements IVehiculosService {
     return wrapped;
   }
 
+  private sharedCacheKey(key: string): string {
+    return key;
+  }
+
+  private trace(stage: string, startedAt: number, extra?: Record<string, unknown>): void {
+    if (!perfEnabled()) return;
+    const ms = Math.round((perfNow() - startedAt) * 10) / 10;
+    const prefix = `[SPVehiculosService:${this.listId || "no-list"}]`;
+    if (extra) {
+      // eslint-disable-next-line no-console
+      console.log(prefix, stage, `${ms}ms`, extra);
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log(prefix, stage, `${ms}ms`);
+  }
+
   // ============================================================
   // ✅ Helpers de robustez para vistas/fields
   // ============================================================
@@ -274,10 +309,15 @@ export class SPVehiculosService implements IVehiculosService {
     list: IList,
     parameters: Record<string, unknown>
   ): Promise<RenderListDataResult> {
-    const anyList = list as any;
+    const anyList = list as unknown as {
+      concat?: (suffix: string) => RenderListDataQuery;
+      getParent?: () => {
+        concat?: (suffix: string) => RenderListDataQuery;
+      };
+    };
 
     // armamos la llamada al endpoint /RenderListDataAsStream sin usar .clone
-    const q =
+    const q: RenderListDataQuery | undefined =
       typeof anyList.concat === "function"
         ? anyList.concat("/RenderListDataAsStream")
         : anyList.getParent?.().concat?.("/RenderListDataAsStream");
@@ -350,30 +390,39 @@ export class SPVehiculosService implements IVehiculosService {
   // Base (vehículos)
   // ============================================================
   public async getMeta(): Promise<ListMeta> {
-    const [info, field] = await Promise.all([
-      this.l().select("Id")() as Promise<{ Id: string }>,
-      this.l()
-        .fields.getByInternalNameOrTitle("proveedor")
-        .select("LookupList", "AllowMultipleValues")() as Promise<FieldProveedorInfo>,
-    ]);
+    if (!this.listId) throw new Error("No se configuró la lista.");
 
-    let provOptions: Array<{ key: number; text: string }> = [];
-    if (field.LookupList) {
-      const provs = (await this.sp.web.lists
-        .getById(field.LookupList)
-        .items.select("Id", "Title")
-        .top(500)()) as Array<{ Id: number; Title?: string }>;
-      provOptions = provs.map((x) => ({ key: x.Id, text: x.Title || "" }));
-    }
+    const key = `meta:${this.listId}`;
+    return SHARED_CACHE.get(this.sharedCacheKey(key), async () => {
+      const t0 = perfNow();
+      const [info, field] = await Promise.all([
+        this.l().select("Id")() as Promise<{ Id: string }>,
+        this.l()
+          .fields.getByInternalNameOrTitle("proveedor")
+          .select("LookupList", "AllowMultipleValues")() as Promise<FieldProveedorInfo>,
+      ]);
 
-    return {
-      listId: info.Id,
-      provMulti: Boolean(field.AllowMultipleValues),
-      provOptions,
-    };
+      let provOptions: Array<{ key: number; text: string }> = [];
+      if (field.LookupList) {
+        const provs = (await this.sp.web.lists
+          .getById(field.LookupList)
+          .items.select("Id", "Title")
+          .top(500)()) as Array<{ Id: number; Title?: string }>;
+        provOptions = provs.map((x) => ({ key: x.Id, text: x.Title || "" }));
+      }
+
+      const meta: ListMeta = {
+        listId: info.Id,
+        provMulti: Boolean(field.AllowMultipleValues),
+        provOptions,
+      };
+      this.trace("getMeta", t0, { listId: this.listId, lookupOptions: provOptions.length });
+      return meta;
+    });
   }
 
   public async listRawByView(viewId: string, boolField?: string): Promise<GridRow[]> {
+    const t0 = perfNow();
     const view = this.l().views.getById(viewId);
     const v = (await view.select("ViewQuery", "RowLimit")()) as ViewInfoLite;
 
@@ -419,17 +468,26 @@ export class SPVehiculosService implements IVehiculosService {
       for (const r of rows) r[boolField] = normalizeBooleanValue(r[boolField]);
     }
 
-    return this.resolveLookupTexts(rows, metas);
+    const hydrated = await this.hydrateLookupTexts(rows, metas);
+    this.trace("listRawByView", t0, {
+      viewId,
+      rows: hydrated.items.length,
+      lookupFields: Object.keys(hydrated.lookupOpts).length,
+    });
+    return hydrated.items;
   }
 
   public async getViewGrid(
     viewId: string,
-    boolField?: string
+    boolField?: string,
+    options?: ViewGridOptions
   ): Promise<{ columns: GridColumn[]; items: GridRow[]; listId: string }> {
     if (!this.listId) throw new Error("No se configuró la lista.");
+    const t0 = perfNow();
 
     const names = (await this.getViewFieldNames(viewId)).map(normalizeViewName);
     const metas = await this.getFieldsMeta(names);
+    this.trace("getViewGrid.schema", t0, { viewId, fields: names.length, metas: metas.length });
 
     const columns: GridColumn[] = metas.map((m) => ({
       key: m.internalName,
@@ -440,7 +498,18 @@ export class SPVehiculosService implements IVehiculosService {
     }));
 
     const items = await this.listRawByView(viewId, boolField);
-    return { columns, items, listId: this.listId };
+    if (options?.resolveLookups === false) {
+      this.trace("getViewGrid.itemsRaw", t0, { viewId, rows: items.length, resolveLookups: false });
+      return { columns, items, listId: this.listId };
+    }
+
+    const hydrated = await this.hydrateLookupTexts(items, metas);
+    this.trace("getViewGrid.hydrate", t0, {
+      viewId,
+      rows: hydrated.items.length,
+      lookupFields: Object.keys(hydrated.lookupOpts).length,
+    });
+    return { columns, items: hydrated.items, listId: this.listId };
   }
 
   /**
@@ -453,7 +522,8 @@ export class SPVehiculosService implements IVehiculosService {
     pagingToken?: string,
     boolField?: string,
     sortField?: string,
-    sortDesc?: boolean
+    sortDesc?: boolean,
+    options?: ViewGridOptions
   ): Promise<{
     columns: GridColumn[];
     items: GridRow[];
@@ -462,6 +532,7 @@ export class SPVehiculosService implements IVehiculosService {
   }> {
     if (!this.listId) throw new Error("No se configuró la lista.");
     if (!viewId) throw new Error("viewId requerido");
+    const t0 = perfNow();
 
     const sortFieldNormRaw = String(sortField ?? "").trim();
     const sortFieldNorm =
@@ -507,12 +578,14 @@ export class SPVehiculosService implements IVehiculosService {
       const v = (await view.select("ViewQuery")()) as ViewInfoLite;
 
       const fieldNames = (await this.getViewFieldNames(viewId)).map(normalizeViewName);
+      this.trace("getViewGridPaged.schemaNames", t0, { viewId, fields: fieldNames.length });
 
       const names = Array.from(new Set<string>(["ID", "Title", ...fieldNames]));
       if (boolField && names.indexOf(boolField) === -1) names.push(boolField);
       if (sortFieldNorm && names.indexOf(sortFieldNorm) === -1) names.push(sortFieldNorm);
 
       const metas = await this.getFieldsMeta(names.filter((n) => n !== "ID"));
+      this.trace("getViewGridPaged.schemaMeta", t0, { viewId, metas: metas.length });
 
       const columns: GridColumn[] = metas.map((m) => ({
         key: m.internalName,
@@ -567,6 +640,10 @@ export class SPVehiculosService implements IVehiculosService {
 
       // ✅ CAMBIO CLAVE: sin clone
       const data = await this.renderListDataAsStreamSafe(this.l(), parameters);
+      this.trace("getViewGridPaged.renderData", t0, {
+        viewId,
+        rows: Array.isArray(data?.Row) ? data.Row.length : 0,
+      });
 
       const rows: GridRow[] = Array.isArray(data?.Row) ? data.Row : [];
 
@@ -574,7 +651,13 @@ export class SPVehiculosService implements IVehiculosService {
         for (const r of rows) r[boolField] = normalizeBooleanValue(r[boolField]);
       }
 
-      const items = await this.resolveLookupTexts(rows, metas);
+      const items =
+        options?.resolveLookups === false ? rows : (await this.hydrateLookupTexts(rows, metas)).items;
+      if (options?.resolveLookups === false) {
+        this.trace("getViewGridPaged.itemsRaw", t0, { viewId, rows: items.length, resolveLookups: false });
+      } else {
+        this.trace("getViewGridPaged.hydrate", t0, { viewId, rows: items.length });
+      }
 
       const nextHref = data?.NextHref || undefined;
       const nextToken = nextHref
@@ -727,30 +810,36 @@ export class SPVehiculosService implements IVehiculosService {
   // Metadatos (lista base)
   // ============================================================
   public async getViewFieldNames(viewId: string): Promise<string[]> {
-    const view = this.l().views.getById(viewId);
+    if (!this.listId) throw new Error("No se configuró la lista.");
 
-    try {
-      const raw = (await (view as unknown as { fields: () => Promise<unknown> }).fields()) as unknown;
-      const arr = extractStringArray(raw);
-      if (arr.length) {
-        return arr.map(normalizeViewName).filter((n) => !this.isSysOrSkippableField(n));
+    const key = `viewFieldNames:${this.listId}:${viewId}`;
+    return SHARED_CACHE.get(this.sharedCacheKey(key), async () => {
+      const view = this.l().views.getById(viewId);
+
+      try {
+        const raw = (await (view as unknown as { fields: () => Promise<unknown> }).fields()) as unknown;
+        const arr = extractStringArray(raw);
+        if (arr.length) {
+          return arr.map(normalizeViewName).filter((n) => !this.isSysOrSkippableField(n));
+        }
+      } catch {
+        // fallback a HtmlSchemaXml
       }
-    } catch {
-      // fallback a HtmlSchemaXml
-    }
 
-    const info = (await view.select("HtmlSchemaXml")()) as { HtmlSchemaXml?: string };
-    const xml = String(info?.HtmlSchemaXml || "");
-    const matches = xml.match(/FieldRef\s+Name="([^"]+)"/g) || [];
-    const parsed = matches
-      .map((m) => /FieldRef\s+Name="([^"]+)"/.exec(m)?.[1])
-      .filter((s): s is string => Boolean(s));
+      const info = (await view.select("HtmlSchemaXml")()) as { HtmlSchemaXml?: string };
+      const xml = String(info?.HtmlSchemaXml || "");
+      const matches = xml.match(/FieldRef\s+Name="([^"]+)"/g) || [];
+      const parsed = matches
+        .map((m) => /FieldRef\s+Name="([^"]+)"/.exec(m)?.[1])
+        .filter((s): s is string => Boolean(s));
 
-    return parsed.map(normalizeViewName).filter((n) => !this.isSysOrSkippableField(n));
+      return parsed.map(normalizeViewName).filter((n) => !this.isSysOrSkippableField(n));
+    });
   }
 
   public async getFieldsMeta(fieldInternalNames: string[]): Promise<EditField[]> {
     if (!this.listId) throw new Error("No se configuró la lista.");
+    const t0 = perfNow();
 
     const cleaned = fieldInternalNames
       .map((x) => normalizeViewName(String(x || "").trim()))
@@ -761,9 +850,14 @@ export class SPVehiculosService implements IVehiculosService {
       .sort()
       .join("|")}`;
 
-    return GLOBAL_CACHE.get(key, async () => {
+    return SHARED_CACHE.get(this.sharedCacheKey(key), async () => {
       const list = this.l();
       const metasMaybe = await Promise.all(cleaned.map(async (name) => this.tryGetFieldMetaFromList(list, name)));
+      this.trace("getFieldsMeta", t0, {
+        listId: this.listId,
+        requested: cleaned.length,
+        resolved: metasMaybe.filter((m): m is EditField => Boolean(m)).length,
+      });
       return metasMaybe.filter((m): m is EditField => Boolean(m));
     });
   }
@@ -775,11 +869,13 @@ export class SPVehiculosService implements IVehiculosService {
 
   public async getLookupOptionsByListId(listId: string): Promise<Array<{ key: number; text: string }>> {
     const key = `lookupOpts:${listId}`;
-    return GLOBAL_CACHE.get(key, async () => {
+    return SHARED_CACHE.get(this.sharedCacheKey(key), async () => {
+      const t0 = perfNow();
       const items = (await this.sp.web.lists
         .getById(listId)
         .items.select("Id", "Title")
         .top(500)()) as Array<{ Id: number; Title?: string }>;
+      this.trace("getLookupOptionsByListId", t0, { listId, count: items.length });
       return items.map((x) => ({ key: x.Id, text: x.Title || "" }));
     });
   }
@@ -976,8 +1072,11 @@ export class SPVehiculosService implements IVehiculosService {
   // Mini-form: vista/campos/valores/listas arbitrarias
   // ============================================================
   public async getViewFieldNamesFromList(listId: string, viewId: string): Promise<string[]> {
-    const list = this.sp.web.lists.getById(listId);
-    return this.getViewFieldNamesFromListInternal(list as unknown as IList, viewId);
+    const key = `viewFieldNames:${listId}:${viewId}`;
+    return SHARED_CACHE.get(this.sharedCacheKey(key), async () => {
+      const list = this.sp.web.lists.getById(listId);
+      return this.getViewFieldNamesFromListInternal(list as unknown as IList, viewId);
+    });
   }
 
   public async getFieldsMetaFromList(listId: string, internalNames: string[]): Promise<EditField[]> {
@@ -990,7 +1089,7 @@ export class SPVehiculosService implements IVehiculosService {
       .sort()
       .join("|")}`;
 
-    return GLOBAL_CACHE.get(key, async () => {
+    return SHARED_CACHE.get(this.sharedCacheKey(key), async () => {
       const list = this.sp.web.lists.getById(listId);
 
       const metasMaybe = await Promise.all(
@@ -1174,7 +1273,19 @@ export class SPVehiculosService implements IVehiculosService {
   }
 
   public clearCaches(): void {
-    if (this.listId) GLOBAL_CACHE.clear(`fieldsMeta:${this.listId}:`);
+    if (!this.listId) return;
+
+    const prefixes = [
+      `meta:${this.listId}`,
+      `viewFieldNames:${this.listId}:`,
+      `fieldsMeta:${this.listId}:`,
+      `lookupOpts:${this.listId}`,
+    ];
+
+    for (const prefix of prefixes) {
+      SHARED_CACHE.clear(prefix);
+    }
+
   }
 
   // ============================================================
@@ -1231,8 +1342,8 @@ export class SPVehiculosService implements IVehiculosService {
     typeAsString: string,
     value: ParentValue
   ): { fieldRefXml: string; valueXml: string } {
-    const t = (s: string) => s.toLowerCase();
-    const xml = (s: unknown) =>
+    const t = (s: string): string => s.toLowerCase();
+    const xml = (s: unknown): string =>
       String(s)
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
@@ -1276,16 +1387,24 @@ export class SPVehiculosService implements IVehiculosService {
     };
   }
 
-  private async resolveLookupTexts(items: GridRow[], metas: EditField[]): Promise<GridRow[]> {
+  public async hydrateLookupTexts(
+    items: GridRow[],
+    metas: EditField[]
+  ): Promise<LookupHydrationResult> {
+    const t0 = perfNow();
     const lookupMetas = metas.filter((m) => m.type === "Lookup" || m.type === "User");
-    if (!lookupMetas.length || !items.length) return items;
+    if (!lookupMetas.length || !items.length) {
+      return { items, lookupOpts: {} };
+    }
 
     const dicts: Record<string, Map<number, string>> = {};
+    const lookupOpts: Record<string, Array<{ key: number; text: string }>> = {};
 
     await Promise.all(
       lookupMetas.map(async (m): Promise<void> => {
         if (!m.lookupListId) return;
         const opts = await this.getLookupOptionsByListId(m.lookupListId);
+        lookupOpts[m.internalName] = opts;
         dicts[m.internalName] = new Map(opts.map((o) => [Number(o.key), String(o.text || "")]));
       })
     );
@@ -1319,7 +1438,7 @@ export class SPVehiculosService implements IVehiculosService {
         if (Array.isArray(rr)) return extractIds(rr);
 
         // Id puede venir number o string
-        const idRaw = o.Id ?? o.id ?? o.LookupId ?? o.lookupId ?? o["ID"] ?? o["Id"];
+        const idRaw = o.Id ?? o.id ?? o.LookupId ?? o.lookupId ?? o.ID ?? o.Id;
 
         if (typeof idRaw === "number") return [idRaw];
         if (typeof idRaw === "string") {
@@ -1353,7 +1472,7 @@ export class SPVehiculosService implements IVehiculosService {
       return [];
     };
 
-    return items.map((row) => {
+    const hydrated = items.map((row) => {
       const r: GridRow = { ...row };
 
       for (const m of lookupMetas) {
@@ -1386,6 +1505,11 @@ export class SPVehiculosService implements IVehiculosService {
 
       return r;
     });
+    this.trace("hydrateLookupTexts", t0, {
+      rows: hydrated.length,
+      lookupFields: Object.keys(lookupOpts).length,
+    });
+    return { items: hydrated, lookupOpts };
   }
 
   private async getViewFieldNamesFromListInternal(list: IList, viewId: string): Promise<string[]> {

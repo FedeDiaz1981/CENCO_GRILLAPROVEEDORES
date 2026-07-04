@@ -38,6 +38,15 @@ export type PagedGridResult = {
   listId?: string;
 };
 
+export type ViewGridOptions = {
+  resolveLookups?: boolean;
+};
+
+export type LookupHydrationResult = {
+  items: GridRow[];
+  lookupOpts: Record<string, Array<{ key: number; text: string }>>;
+};
+
 export type SiteListRef = { id: string; title: string };
 export type FieldRef = { internalName: string; title: string; type: string };
 
@@ -68,7 +77,8 @@ export interface IVehiculosService {
    */
   getViewGrid(
     viewId: string,
-    boolField?: string
+    boolField?: string,
+    options?: ViewGridOptions
   ): Promise<{ columns: GridColumn[]; items: GridRow[]; listId?: string }>;
 
   add(draft: VehiculoDraft): Promise<void>;
@@ -161,7 +171,8 @@ export interface IVehiculosService {
     pagingToken?: string,
     boolField?: string,
     sortField?: string,
-    sortDesc?: boolean
+    sortDesc?: boolean,
+    options?: ViewGridOptions
   ): Promise<{
     columns: GridColumn[];
     items: GridRow[];
@@ -179,6 +190,11 @@ export interface IVehiculosService {
     id: number,
     schema: EditField[]
   ): Promise<Record<string, unknown>>;
+
+  hydrateLookupTexts?(
+    items: GridRow[],
+    metas: EditField[]
+  ): Promise<LookupHydrationResult>;
 
   /**
    * ✅ NUEVO: Lectura rápida de campos puntuales en lista arbitraria

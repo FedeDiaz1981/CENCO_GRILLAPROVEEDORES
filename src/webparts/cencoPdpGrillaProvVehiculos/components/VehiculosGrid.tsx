@@ -32,6 +32,14 @@ import type { ParentValue } from "../services/IVehiculosService";
 import { Vehiculo } from "../models/types";
 import { useVehiculosGrid } from "../hooks/useVehiculosGrid";
 import { normalizeBooleanValue } from "../utils/booleans";
+import {
+  buildAutomateUrl as buildAutomateUrlHelper,
+  csvEscape as csvEscapeHelper,
+  filterOutIdColumns as filterOutIdColumnsHelper,
+  getRowId as getRowIdHelper,
+  isMotivoRequired as isMotivoRequiredHelper,
+  shouldShowMotivoModal as shouldShowMotivoModalHelper,
+} from "../utils/flowHelpers";
 
 type RowItem = Record<string, unknown> & {
   id?: number;
@@ -103,7 +111,7 @@ const appTheme = createTheme({
 });
 
 // ====== inyecta css solo una vez ======
-const ensureSharedStyles = (): void => {
+const ensureSharedStyles = (): () => void => {
   const id = "cnco-vehiculos-shared";
 
   const css = `
@@ -195,8 +203,20 @@ const ensureSharedStyles = (): void => {
   style.textContent = css;
   document.head.appendChild(style);
 
-  const w = window as unknown as { __cncoVehStylesObs?: MutationObserver };
-  if (!w.__cncoVehStylesObs) {
+  type SharedStyleState = {
+    observers: number;
+    observer?: MutationObserver;
+  };
+
+  const w = window as unknown as { __cncoVehStylesState?: SharedStyleState };
+  if (!w.__cncoVehStylesState) {
+    w.__cncoVehStylesState = { observers: 0 };
+  }
+
+  const state = w.__cncoVehStylesState;
+  state.observers += 1;
+
+  if (!state.observer) {
     const obs = new MutationObserver(() => {
       const el = document.getElementById(id);
       if (!el) return;
@@ -205,8 +225,18 @@ const ensureSharedStyles = (): void => {
       }
     });
     obs.observe(document.head, { childList: true });
-    w.__cncoVehStylesObs = obs;
+    state.observer = obs;
   }
+
+  return () => {
+    const current = w.__cncoVehStylesState;
+    if (!current) return;
+    current.observers = Math.max(0, current.observers - 1);
+    if (current.observers === 0) {
+      current.observer?.disconnect();
+      current.observer = undefined;
+    }
+  };
 };
 
 // ====== estilos locales ======
@@ -344,6 +374,8 @@ type Props = {
   allowRelatedDownloadAttachments?: boolean;
 
   showDownloadAttachments?: boolean;
+  gridLazyLoad?: boolean;
+  instanceKey?: string;
   listId: string;
 
   // ===== UI: título + colapsable =====
@@ -390,9 +422,14 @@ type Props = {
 };
 
 const UI_PAGE_SIZE = 10;
-const FETCH_BATCH = 30;
-const PREFETCH_THRESHOLD = 10;
+const FETCH_BATCH = 15;
+const PREFETCH_THRESHOLD = 5;
 const DYN_CACHE_TTL_MS = 5 * 60 * 1000;
+
+const perfNow = (): number =>
+  typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
 
 type DynCacheKey = string;
 type DynCacheEntry = {
@@ -410,6 +447,7 @@ const makeDynCacheKey = (p: {
   viewId?: string;
   toggleField?: string;
   service: IVehiculosService;
+  instanceKey?: string;
 }): string => {
   const svc = p.service as unknown as {
     listId?: unknown;
@@ -417,7 +455,7 @@ const makeDynCacheKey = (p: {
     baseListId?: unknown;
   };
   const listId = String(svc.listId ?? svc._listId ?? svc.baseListId ?? "");
-  return `vehiculosGrid:${listId}:${String(p.viewId ?? "")}:${String(
+  return `vehiculosGrid:${String(p.instanceKey ?? "global")}:${listId}:${String(p.viewId ?? "")}:${String(
     p.toggleField ?? ""
   )}`;
 };
@@ -450,10 +488,7 @@ type ViewGridColumn = {
 
 type SortState = { field?: string; desc: boolean };
 
-const getRowId = (it: RowItem | undefined): number | undefined => {
-  if (!it) return undefined;
-  return it.id ?? it.Id ?? it.ID ?? it.ItemId ?? it.ID_x0020_ ?? it.Id_x0020_;
-};
+const getRowId = getRowIdHelper;
 
 const VehiculosGrid: React.FC<Props> = (props) => {
   const {
@@ -484,6 +519,8 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
     listId,
     showDownloadAttachments = true,
+    gridLazyLoad = true,
+    instanceKey = "global",
 
     // ===== UI: título + colapsable =====
     gridTitle = "",
@@ -527,9 +564,63 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     automateRejectUrl = "",
   } = props;
 
-  React.useEffect(() => {
-    ensureSharedStyles();
+  const perfEnabled = React.useMemo((): boolean => {
+    try {
+      return window.localStorage.getItem("cncoGridPerf") === "1";
+    } catch {
+      return false;
+    }
   }, []);
+
+  const perfLog = React.useCallback(
+    (stage: string, startedAt: number, extra?: Record<string, unknown>): void => {
+      if (!perfEnabled) return;
+      const ms = Math.round((perfNow() - startedAt) * 10) / 10;
+      const prefix = `[VehiculosGrid:${instanceKey}]`;
+      if (extra) {
+        // eslint-disable-next-line no-console
+        console.log(prefix, stage, `${ms}ms`, extra);
+        return;
+      }
+      // eslint-disable-next-line no-console
+      console.log(prefix, stage, `${ms}ms`);
+    },
+    [instanceKey, perfEnabled]
+  );
+
+  React.useEffect(() => {
+    const cleanup = ensureSharedStyles();
+    return cleanup;
+  }, []);
+
+  const shellRef = React.useRef<HTMLDivElement | null>(null);
+  const [isVisible, setIsVisible] = React.useState<boolean>(!gridLazyLoad);
+
+  React.useEffect(() => {
+    if (!gridLazyLoad) {
+      setIsVisible(true);
+      return;
+    }
+
+    const el = shellRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") {
+      setIsVisible(true);
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setIsVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "200px" }
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [gridLazyLoad]);
 
   // ✅ colapsable
   const [collapsed, setCollapsed] = React.useState<boolean>(
@@ -582,6 +673,13 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     dynTokenRef.current = dynNextToken;
   }, [dynNextToken]);
 
+  const isMountedRef = React.useRef<boolean>(true);
+  React.useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   const {
     s,
     enterEdit,
@@ -593,12 +691,15 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     updateDraft,
     toggleActive,
     refresh,
-  } = useVehiculosGrid(service, groupNameForEdit, viewId, toggleField);
+  } = useVehiculosGrid(service, groupNameForEdit, viewId, toggleField, undefined, undefined, {
+    enabled: isVisible,
+    instanceKey,
+  });
 
   const isDynMode = Boolean(viewId);
   const cacheKey = React.useMemo(
-    () => makeDynCacheKey({ service, viewId, toggleField }),
-    [service, viewId, toggleField]
+    () => makeDynCacheKey({ service, viewId, toggleField, instanceKey }),
+    [service, viewId, toggleField, instanceKey]
   );
 
   // =======================
@@ -645,24 +746,14 @@ const VehiculosGrid: React.FC<Props> = (props) => {
   const [motivoAction, setMotivoAction] = React.useState<"approve" | "reject">("reject");
 
   const shouldShowMotivoModal = React.useCallback(
-    (action: "approve" | "reject"): boolean => {
-      const mode = approveMotivoModalMode || "none";
-      if (mode === "both") return true;
-      if (mode === "approve") return action === "approve";
-      if (mode === "reject") return action === "reject";
-      return false;
-    },
+    (action: "approve" | "reject"): boolean =>
+      shouldShowMotivoModalHelper(approveMotivoModalMode, action),
     [approveMotivoModalMode]
   );
 
   const isMotivoRequired = React.useCallback(
-    (action: "approve" | "reject"): boolean => {
-      const mode = approveMotivoRequiredMode || "none";
-      if (mode === "both") return true;
-      if (mode === "approve") return action === "approve";
-      if (mode === "reject") return action === "reject";
-      return false;
-    },
+    (action: "approve" | "reject"): boolean =>
+      isMotivoRequiredHelper(approveMotivoRequiredMode, action),
     [approveMotivoRequiredMode]
   );
 
@@ -705,8 +796,9 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     dynTokenRef.current = undefined;
   }, []);
 
-  const ensureDynSchemaAndLookups = React.useCallback(
-    async (cols: IColumn[]): Promise<void> => {
+  const ensureDynSchema = React.useCallback(
+    async (cols: IColumn[]): Promise<EditField[]> => {
+      const t0 = perfNow();
       const fieldNames = cols.map((c) => c.fieldName ?? c.key);
       const metas = await service.getFieldsMeta(fieldNames);
 
@@ -715,27 +807,51 @@ const VehiculosGrid: React.FC<Props> = (props) => {
         schemaMap[m.internalName] = m;
       });
       setDynSchema(schemaMap);
-
-      const lookupEntries = await Promise.all(
-        metas
-          .filter((m) => (m.type === "Lookup" || m.type === "User") && m.lookupListId)
-          .map(async (m) => {
-            const opts = await service.getLookupOptionsByListId(m.lookupListId!);
-            const asDropdown: IDropdownOption[] = opts.map((o) => ({
-              key: o.key,
-              text: o.text,
-            }));
-            return [m.internalName, asDropdown] as const;
-          })
-      );
-
-      const lookupMap: Record<string, IDropdownOption[]> = {};
-      lookupEntries.forEach(([name, opts]) => {
-        lookupMap[name] = opts;
-      });
-      setDynLookupOpts(lookupMap);
+      perfLog("ensureDynSchema", t0, { fields: fieldNames.length, metas: metas.length });
+      return metas;
     },
-    [service]
+    [service, perfLog]
+  );
+
+  const hydrateDynRows = React.useCallback(
+    async (
+      rawRows: RowItem[],
+      metas: EditField[],
+      seq: number,
+      baseLengthBefore: number
+    ): Promise<void> => {
+      const t0 = perfNow();
+      const svcAny = service as unknown as {
+        hydrateLookupTexts?: (
+          items: RowItem[],
+          fieldMetas: EditField[]
+        ) => Promise<{
+          items: RowItem[];
+          lookupOpts: Record<string, IDropdownOption[]>;
+        }>;
+      };
+
+      if (typeof svcAny.hydrateLookupTexts !== "function") return;
+
+      const hydrated = await svcAny.hydrateLookupTexts(rawRows, metas);
+      if (!isMountedRef.current || seq !== requestSeq.current) return;
+
+      if (baseLengthBefore === 0) {
+        setDynBuffer(hydrated.items);
+      } else {
+        setDynBuffer((prev) => {
+          const prefix = prev.slice(0, baseLengthBefore);
+          return prefix.concat(hydrated.items);
+        });
+      }
+
+      setDynLookupOpts(hydrated.lookupOpts);
+      perfLog("hydrateDynRows", t0, {
+        rows: hydrated.items.length,
+        lookupFields: Object.keys(hydrated.lookupOpts).length,
+      });
+    },
+    [service, perfLog]
   );
 
   // ====== helpers stringify/render robustos ======
@@ -791,7 +907,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
         const el = document.createElement("div");
         el.innerHTML = sVal;
-        const txt = el.textContent || (el as any).innerText || "";
+        const txt = el.textContent || (el as HTMLElement).innerText || "";
         return txt.replace(/\u00a0/g, " ").trim();
       };
 
@@ -973,9 +1089,9 @@ const VehiculosGrid: React.FC<Props> = (props) => {
   const sortItemsLocal = React.useCallback(
     <T,>(items: T[], field: string, desc: boolean): T[] => {
       const copy = items.slice();
-      copy.sort((a: any, b: any) => {
-        const av = getSortable(a?.[field]);
-        const bv = getSortable(b?.[field]);
+      copy.sort((a, b) => {
+        const av = getSortable((a as Record<string, unknown>)?.[field]);
+        const bv = getSortable((b as Record<string, unknown>)?.[field]);
         if (av < bv) return desc ? 1 : -1;
         if (av > bv) return desc ? -1 : 1;
         return 0;
@@ -1000,12 +1116,18 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
   const fetchDynBatch = React.useCallback(
     async (opts: { initial: boolean }): Promise<{ bufferLen: number; nextToken?: string }> => {
+      const t0 = perfNow();
       if (!viewId)
+        return { bufferLen: dynLenRef.current, nextToken: dynTokenRef.current };
+      if (!isMountedRef.current)
         return { bufferLen: dynLenRef.current, nextToken: dynTokenRef.current };
 
       const seq = ++requestSeq.current;
 
       try {
+        if (!isMountedRef.current)
+          return { bufferLen: dynLenRef.current, nextToken: dynTokenRef.current };
+
         if (opts.initial) {
           setDynLoading(true);
           setPageIndex(0);
@@ -1020,7 +1142,8 @@ const VehiculosGrid: React.FC<Props> = (props) => {
             nextToken?: string,
             toggleField?: string,
             sortField?: string,
-            sortDesc?: boolean
+            sortDesc?: boolean,
+            options?: { resolveLookups?: boolean }
           ) => Promise<{
             columns?: ViewGridColumn[];
             items?: RowItem[];
@@ -1029,7 +1152,12 @@ const VehiculosGrid: React.FC<Props> = (props) => {
         };
 
         if (typeof svcAny.getViewGridPaged !== "function") {
-          const full = await service.getViewGrid(viewId, toggleField);
+          const full = await service.getViewGrid(viewId, toggleField, {
+            resolveLookups: false,
+          });
+          if (!isMountedRef.current || seq !== requestSeq.current)
+            return { bufferLen: dynLenRef.current, nextToken: dynTokenRef.current };
+
           if (seq !== requestSeq.current)
             return { bufferLen: dynLenRef.current, nextToken: dynTokenRef.current };
 
@@ -1042,33 +1170,53 @@ const VehiculosGrid: React.FC<Props> = (props) => {
           }));
 
           setDynCols(cols);
-          if (opts.initial) await ensureDynSchemaAndLookups(cols);
+          const metas = await ensureDynSchema(cols);
 
           const newItems = Array.isArray(full.items) ? (full.items as RowItem[]) : [];
+          const baseLenBefore = dynLenRef.current;
           setDynBuffer(newItems);
           setDynNextToken(undefined);
 
           dynLenRef.current = newItems.length;
           dynTokenRef.current = undefined;
 
+          if (opts.initial) {
+            hydrateDynRows(newItems, metas, seq, baseLenBefore).catch(() => {});
+          }
+
+          perfLog("fetchDynBatch.fallback", t0, {
+            initial: opts.initial,
+            rows: newItems.length,
+            nextToken: dynTokenRef.current ? "yes" : "no",
+          });
           return { bufferLen: dynLenRef.current, nextToken: dynTokenRef.current };
         }
 
         const effectiveSortField = isFiltered ? undefined : sort.field;
         const effectiveSortDesc = isFiltered ? undefined : sort.desc;
 
-        const doCall = async (sortDescArg: boolean | undefined, sortFieldArg?: string) => {
+        const doCall = async (
+          sortDescArg: boolean | undefined,
+          sortFieldArg?: string
+        ): Promise<{
+          columns?: ViewGridColumn[];
+          items?: RowItem[];
+          nextToken?: string;
+        }> => {
           return svcAny.getViewGridPaged!(
             viewId,
             FETCH_BATCH,
             opts.initial ? undefined : dynTokenRef.current,
             toggleField,
             sortFieldArg ?? effectiveSortField,
-            sortDescArg
+            sortDescArg,
+            { resolveLookups: false }
           );
         };
 
         let res = await doCall(effectiveSortDesc as boolean | undefined, effectiveSortField);
+        if (!isMountedRef.current)
+          return { bufferLen: dynLenRef.current, nextToken: dynTokenRef.current };
 
         if (
           !isFiltered &&
@@ -1094,6 +1242,8 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
         if (seq !== requestSeq.current)
           return { bufferLen: dynLenRef.current, nextToken: dynTokenRef.current };
+        if (!isMountedRef.current)
+          return { bufferLen: dynLenRef.current, nextToken: dynTokenRef.current };
 
         const cols: IColumn[] = (res.columns || []).map((c) => ({
           key: c.key,
@@ -1104,22 +1254,36 @@ const VehiculosGrid: React.FC<Props> = (props) => {
         }));
 
         setDynCols(cols);
-        if (opts.initial) await ensureDynSchemaAndLookups(cols);
+        const metas = await ensureDynSchema(cols);
 
         const newItems = Array.isArray(res.items) ? res.items : [];
+        const baseLenBefore = dynLenRef.current;
         setDynBuffer((prev) => (opts.initial ? newItems : prev.concat(newItems)));
 
+        const resAny = res as {
+          nextToken?: string;
+          NextToken?: string;
+          nextPageToken?: string;
+          NextPageToken?: string;
+          next?: string;
+          Next?: string;
+          nextHref?: string;
+          NextHref?: string;
+          odataNextLink?: string;
+          "@odata.nextLink"?: string;
+        };
+
         const nextToken =
-          (res as any).nextToken ??
-          (res as any).NextToken ??
-          (res as any).nextPageToken ??
-          (res as any).NextPageToken ??
-          (res as any).next ??
-          (res as any).Next ??
-          (res as any).nextHref ??
-          (res as any).NextHref ??
-          (res as any).odataNextLink ??
-          (res as any)["@odata.nextLink"];
+          resAny.nextToken ??
+          resAny.NextToken ??
+          resAny.nextPageToken ??
+          resAny.NextPageToken ??
+          resAny.next ??
+          resAny.Next ??
+          resAny.nextHref ??
+          resAny.NextHref ??
+          resAny.odataNextLink ??
+          resAny["@odata.nextLink"];
 
         // ✅ FIX: no pisar con res.nextToken al final (a veces viene undefined aunque nextToken exista)
         const normalizedNext = (nextToken ?? res.nextToken) as string | undefined;
@@ -1131,17 +1295,29 @@ const VehiculosGrid: React.FC<Props> = (props) => {
           ? newItems.length
           : dynLenRef.current + newItems.length;
 
+        hydrateDynRows(newItems, metas, seq, baseLenBefore).catch(() => {});
+
+        perfLog("fetchDynBatch.paged", t0, {
+          initial: opts.initial,
+          rows: newItems.length,
+          nextToken: dynTokenRef.current ? "yes" : "no",
+        });
+
         return { bufferLen: dynLenRef.current, nextToken: dynTokenRef.current };
       } finally {
-        if (opts.initial) setDynLoading(false);
-        else setDynLoadingMore(false);
+        if (isMountedRef.current) {
+          if (opts.initial) setDynLoading(false);
+          else setDynLoadingMore(false);
+        }
       }
     },
     [
       service,
       viewId,
       toggleField,
-      ensureDynSchemaAndLookups,
+      ensureDynSchema,
+      hydrateDynRows,
+      perfLog,
       sort.field,
       sort.desc,
       sortItemsLocal,
@@ -1151,6 +1327,14 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
   // ✅ hard refresh
   const hardRefresh = React.useCallback((): void => {
+    if (!isMountedRef.current) return;
+
+    if (!isVisible) {
+      clearDynCache(cacheKey);
+      resetDyn();
+      return;
+    }
+
     refresh().catch(() => {});
     requestSeq.current += 1;
 
@@ -1159,9 +1343,11 @@ const VehiculosGrid: React.FC<Props> = (props) => {
       resetDyn();
       fetchDynBatch({ initial: true }).catch(() => {});
     }
-  }, [refresh, isDynMode, cacheKey, resetDyn, fetchDynBatch]);
+  }, [isVisible, refresh, isDynMode, cacheKey, resetDyn, fetchDynBatch]);
 
   React.useEffect(() => {
+    if (!isVisible) return;
+
     if (!viewId) {
       resetDyn();
       return;
@@ -1187,7 +1373,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     resetDyn();
     fetchDynBatch({ initial: true }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewId, cacheKey, resetDyn]);
+  }, [isVisible, viewId, cacheKey, resetDyn, fetchDynBatch]);
 
   const loadMoreIfNeeded = React.useCallback(
     async (targetPageIndex: number): Promise<void> => {
@@ -1267,9 +1453,9 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     if (!sort.field) return itemsFiltered;
 
     if (!isDynMode)
-      return sortItemsLocal(itemsFiltered as any[], sort.field, sort.desc) as any;
+      return sortItemsLocal(itemsFiltered as Array<Record<string, unknown>>, sort.field, sort.desc);
     if (isFiltered)
-      return sortItemsLocal(itemsFiltered as any[], sort.field, sort.desc) as any;
+      return sortItemsLocal(itemsFiltered as Array<Record<string, unknown>>, sort.field, sort.desc);
 
     return itemsFiltered;
   }, [itemsFiltered, isDynMode, isFiltered, sort.field, sort.desc, sortItemsLocal]);
@@ -1322,14 +1508,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDynMode, cacheKey, dynCols, dynBuffer, dynNextToken, dynSchema, dynLookupOpts]);
 
-  const filterOutIdCols = React.useCallback(
-    (cols: IColumn[]): IColumn[] =>
-      cols.filter((c) => {
-        const n = (c.fieldName || c.key || c.name || "").toString();
-        return !/^(ID|Id)$/i.test(n);
-      }),
-    []
-  );
+  const filterOutIdCols = filterOutIdColumnsHelper;
 
   // =======================
   // Relacionados
@@ -1362,32 +1541,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
   // =======================
   const canApprove = approvalEnabled && isApprover;
 
-  const buildAutomateUrl = React.useCallback(
-    (baseUrl: string, args: Record<string, string | number | boolean | undefined | null>): string => {
-      let url = String(baseUrl || "").trim();
-      if (!url) return url;
-
-      Object.keys(args).forEach((k) => {
-        const val = args[k];
-        const safe = val === undefined || val === null ? "" : encodeURIComponent(String(val));
-        url = url.replace(new RegExp(`\\{${k}\\}`, "g"), safe);
-      });
-
-      const hasPlaceholders = /\{[a-zA-Z0-9_]+\}/.test(String(baseUrl));
-      if (hasPlaceholders) return url;
-
-      const qp: string[] = [];
-      Object.keys(args).forEach((k) => {
-        const v = args[k];
-        if (v === undefined || v === null || String(v).trim() === "") return;
-        qp.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`);
-      });
-
-      if (!qp.length) return url;
-      return url + (url.includes("?") ? "&" : "?") + qp.join("&");
-    },
-    []
-  );
+  const buildAutomateUrl = buildAutomateUrlHelper;
 
   const callWf = React.useCallback(
     async (action: "approve" | "reject", itemId: number, reason: string): Promise<void> => {
@@ -1449,8 +1603,12 @@ const VehiculosGrid: React.FC<Props> = (props) => {
       }
 
       // 1) updateItemFields (ideal)
-      if (typeof (service as any).updateItemFields === "function") {
-        await (service as any).updateItemFields(itemId, values);
+      const serviceAny = service as {
+        updateItemFields?: (id: number, fields: Record<string, unknown>) => Promise<void>;
+      };
+
+      if (typeof serviceAny.updateItemFields === "function") {
+        await serviceAny.updateItemFields(itemId, values);
         return;
       }
 
@@ -1480,7 +1638,19 @@ const VehiculosGrid: React.FC<Props> = (props) => {
       const wfE = String(wfErrorField || "").trim();
       if (!wfS) return {};
 
-      const svcAny = service as any;
+      const svcAny = service as {
+        getItemFieldsFromList?: (
+          listId: string,
+          id: number,
+          internalNames: string[]
+        ) => Promise<Record<string, unknown>>;
+        getItemFields?: (id: number, internalNames: string[]) => Promise<Record<string, unknown>>;
+        getItemValuesFromList?: (
+          listId: string,
+          id: number,
+          schema: EditField[]
+        ) => Promise<Record<string, unknown>>;
+      };
 
       const maxMs = 90_000; // 90s
       const stepMs = 2000; // 2s
@@ -1507,15 +1677,15 @@ const VehiculosGrid: React.FC<Props> = (props) => {
           const schema: EditField[] = [
             { internalName: wfS, title: wfS, type: "Choice", required: false, readOnly: false },
             ...(wfE
-              ? ([
+              ? [
                   {
                     internalName: wfE,
                     title: wfE,
                     type: "Note",
                     required: false,
                     readOnly: false,
-                  },
-                ] as any)
+                  } as EditField,
+                ]
               : []),
           ] as EditField[];
           return (await svcAny.getItemValuesFromList(listId, itemId, schema)) as Record<
@@ -1529,7 +1699,9 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
       // eslint-disable-next-line no-constant-condition
       while (true) {
+        if (!isMountedRef.current) return {};
         const v = await readFields();
+        if (!isMountedRef.current) return {};
 
         const st = String(v?.[wfS] ?? "").trim();
         const err = wfE ? String(v?.[wfE] ?? "").trim() : "";
@@ -1576,6 +1748,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
           // 3) Esperar respuesta via wfstatus
           setWfBusyText("Esperando respuesta del workflow...");
           const r = await pollWfUntilDone(id);
+          if (!isMountedRef.current) return;
 
           if (r.status === "Error") {
             alert(
@@ -1594,8 +1767,10 @@ const VehiculosGrid: React.FC<Props> = (props) => {
         console.error("Error aprobación", e);
         alert("No se pudo completar la aprobación/rechazo.");
       } finally {
-        setApprovalBusy(false);
-        setWfBusyText("");
+        if (isMountedRef.current) {
+          setApprovalBusy(false);
+          setWfBusyText("");
+        }
       }
     },
     [
@@ -1966,12 +2141,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     [s.meta?.provOptions]
   );
 
-  const csvEscape = (v: unknown): string => {
-    const sVal = v === undefined || v === null ? "" : String(v);
-    const needQuotes = /[;"\n\r,]/.test(sVal);
-    const esc = sVal.replace(/"/g, '""');
-    return needQuotes ? `"${esc}"` : esc;
-  };
+  const csvEscape = csvEscapeHelper;
 
   const buildExportRows = (): ExportRows => {
     if (dynCols && isDynMode) {
@@ -2342,12 +2512,12 @@ const VehiculosGrid: React.FC<Props> = (props) => {
                 (acc, cand) => acc.concat(extractIds(cand)),
                 []
               );
-              const selectedKey = ids.length ? ids[0] : undefined;
+              const selectedKey: string | number | undefined = ids.length ? ids[0] : undefined;
 
               return (
                 <Dropdown
                   options={opts}
-                  selectedKey={selectedKey as any}
+                  selectedKey={selectedKey}
                   onChange={(_, opt) =>
                     updateDraft({ [fieldName]: opt ? opt.key : undefined } as Record<string, unknown>)
                   }
@@ -2710,7 +2880,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     });
 
   return (
-    <div className="cnco-vehiculos-shell">
+    <div className="cnco-vehiculos-shell" ref={shellRef}>
       <ThemeProvider theme={appTheme}>
         <Stack tokens={{ childrenGap: 12 }}>
           {/* ✅ Título visible + colapsable */}
