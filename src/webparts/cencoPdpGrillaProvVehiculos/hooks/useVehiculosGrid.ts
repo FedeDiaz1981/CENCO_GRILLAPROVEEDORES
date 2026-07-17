@@ -6,9 +6,9 @@ import type { Vehiculo, VehiculoDraft, ListMeta } from "../models/types";
 import { usePagedViewGrid } from "../hooks/usePagedViewGrid";
 
 type RowLike = Partial<Vehiculo> & {
-  id?: number;
-  Id?: number;
-  ID?: number;
+  id?: number | string;
+  Id?: number | string;
+  ID?: number | string;
   Title?: string;
 };
 
@@ -79,7 +79,15 @@ export function useVehiculosGrid(
   const getRowId = React.useCallback(
     (v: RowLike | undefined): number | undefined => {
       if (!v) return undefined;
-      return v.id ?? v.Id ?? v.ID;
+      const candidates = [v.id, v.Id, v.ID];
+      for (const candidate of candidates) {
+        if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
+        if (typeof candidate === "string") {
+          const parsed = Number(candidate.trim());
+          if (!Number.isNaN(parsed) && Number.isFinite(parsed)) return parsed;
+        }
+      }
+      return undefined;
     },
     []
   );
@@ -316,12 +324,32 @@ export function useVehiculosGrid(
           const draftAny = draft as unknown as Record<string, unknown>;
 
           const keysRaw = Object.keys(draftAny).filter((k) => draftAny[k] !== undefined);
+          const aliasForKey = (key: string): string[] => {
+            const trimmed = String(key || "").trim();
+            if (!trimmed) return [];
 
-          // UI -> SP “obvio”
-          const requested = keysRaw.map((k) => (k === "placa" ? "Title" : k));
+            const out = new Set<string>([trimmed]);
+            if (trimmed === "placa") out.add("Title");
 
-          // metas: resuelve internalName real aunque pases Title/DisplayName
-          const metas = await svc.getFieldsMeta(Array.from(new Set(requested)));
+            const stripped = trimmed
+              .replace(/(_?Ids|_?Id|_?ID)$/i, "")
+              .replace(/Id$/i, "")
+              .trim();
+            if (stripped && stripped !== trimmed) out.add(stripped);
+
+            return Array.from(out);
+          };
+
+          const requestedSet = new Set<string>();
+          for (const k of keysRaw) {
+            for (const alias of aliasForKey(k)) {
+              if (alias) requestedSet.add(alias);
+            }
+          }
+          const requested = Array.from(requestedSet);
+
+          // metas: resuelve internalName real aunque pases Title/DisplayName o sufijos Id
+          const metas = await svc.getFieldsMeta(requested);
 
           // map requestedName -> internalName real (por internalName o por title)
           const keyToInternal: Record<string, string> = {};
@@ -338,8 +366,12 @@ export function useVehiculosGrid(
           const values: Record<string, unknown> = {};
 
           for (const k of keysRaw) {
-            const reqKey = k === "placa" ? "Title" : k;
-            const internal = keyToInternal[String(reqKey).toLowerCase()];
+            const aliases = aliasForKey(k);
+            let internal: string | undefined;
+            for (const alias of aliases) {
+              internal = keyToInternal[String(alias).toLowerCase()];
+              if (internal) break;
+            }
             if (!internal) continue;
 
             values[internal] = draftAny[k];

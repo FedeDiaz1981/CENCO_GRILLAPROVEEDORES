@@ -17,6 +17,7 @@ import {
   IRenderFunction,
   ConstrainMode,
   SelectionMode,
+  Checkbox,
   IconButton,
   TextField,
   Dropdown,
@@ -32,6 +33,13 @@ import type { ParentValue } from "../services/IVehiculosService";
 import { Vehiculo } from "../models/types";
 import { useVehiculosGrid } from "../hooks/useVehiculosGrid";
 import { normalizeBooleanValue } from "../utils/booleans";
+import { parseViewSnapshot, type ViewSnapshot } from "../utils/viewSnapshot";
+import {
+  buildViewColumnConfig,
+  parseViewColumnConfig,
+  stringifyViewColumnConfig,
+  type ViewColumnConfigEntry,
+} from "../utils/viewColumnConfig";
 import {
   buildAutomateUrl as buildAutomateUrlHelper,
   csvEscape as csvEscapeHelper,
@@ -42,12 +50,12 @@ import {
 } from "../utils/flowHelpers";
 
 type RowItem = Record<string, unknown> & {
-  id?: number;
-  Id?: number;
-  ID?: number;
-  ItemId?: number;
-  ID_x0020_?: number;
-  Id_x0020_?: number;
+  id?: number | string;
+  Id?: number | string;
+  ID?: number | string;
+  ItemId?: number | string;
+  ID_x0020_?: number | string;
+  Id_x0020_?: number | string;
   toggle?: boolean;
   placa?: string;
 };
@@ -142,6 +150,65 @@ const ensureSharedStyles = (): () => void => {
       overflow:hidden;
       background:#fff;
       box-shadow:0 4px 14px rgba(0,0,0,.06);
+    }
+
+    .cnco-vehiculos-shell .cnco-html-grid-wrap{
+      width:100%;
+      overflow:auto;
+    }
+
+    .cnco-vehiculos-shell table.cnco-html-grid{
+      width:100%;
+      border-collapse:collapse;
+      table-layout:fixed;
+      background:#fff;
+    }
+
+    .cnco-vehiculos-shell .cnco-html-grid thead th{
+      position:sticky;
+      top:0;
+      z-index:1;
+      background:linear-gradient(90deg,#1e88e5 0%,#3b8fd1 100%)!important;
+      color:#fff!important;
+      text-align:left;
+      font-weight:600;
+      padding:14px 12px;
+      border-bottom:0;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+
+    .cnco-vehiculos-shell .cnco-html-grid thead th.cnco-sortable{
+      cursor:pointer;
+    }
+
+    .cnco-vehiculos-shell .cnco-html-grid thead th .cnco-head-inner{
+      display:flex;
+      align-items:center;
+      gap:6px;
+      min-width:0;
+    }
+
+    .cnco-vehiculos-shell .cnco-html-grid tbody td{
+      padding:12px;
+      border-bottom:1px solid #f0f0f0;
+      vertical-align:middle;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+
+    .cnco-vehiculos-shell .cnco-html-grid tbody tr:hover{
+      background:#f0f7ff;
+    }
+
+    .cnco-vehiculos-shell .cnco-html-grid tbody tr.cnco-row-editing{
+      background:#eef6ff;
+    }
+
+    .cnco-vehiculos-shell .cnco-html-grid .cnco-actions-cell{
+      white-space:nowrap;
     }
 
     /* ===== Header (lo que SP más pisa) ===== */
@@ -389,6 +456,12 @@ type Props = {
   gridTitleFontWeight?: string | number;
   gridTitleFontFamily?: string;
 
+  viewSnapshotJson?: string;
+  viewColumnConfigJson?: string;
+  columnEditorOpenNonce?: number;
+  onCaptureViewSnapshot?: () => Promise<void> | void;
+  onSaveViewColumnConfig?: (json: string) => Promise<void> | void;
+
   // ===== Aprobación (legacy) =====
   enableApproval?: boolean;
   approvalGroupName?: string;
@@ -448,6 +521,7 @@ const makeDynCacheKey = (p: {
   toggleField?: string;
   service: IVehiculosService;
   instanceKey?: string;
+  columnConfigJson?: string;
 }): string => {
   const svc = p.service as unknown as {
     listId?: unknown;
@@ -455,9 +529,10 @@ const makeDynCacheKey = (p: {
     baseListId?: unknown;
   };
   const listId = String(svc.listId ?? svc._listId ?? svc.baseListId ?? "");
+  const cfgKey = String(p.columnConfigJson ?? "").trim();
   return `vehiculosGrid:${String(p.instanceKey ?? "global")}:${listId}:${String(p.viewId ?? "")}:${String(
     p.toggleField ?? ""
-  )}`;
+  )}:${cfgKey}`;
 };
 
 const readDynCache = (key: DynCacheKey): DynCacheEntry | undefined => {
@@ -532,6 +607,11 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     gridTitleColor = "#323130",
     gridTitleFontWeight = "700",
     gridTitleFontFamily = "Segoe UI",
+    viewSnapshotJson,
+    viewColumnConfigJson,
+    columnEditorOpenNonce,
+    onCaptureViewSnapshot,
+    onSaveViewColumnConfig,
 
     // legacy
     enableApproval = false,
@@ -563,6 +643,20 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     automateApproveUrl = "",
     automateRejectUrl = "",
   } = props;
+
+  const parsedSnapshot = React.useMemo<ViewSnapshot | undefined>(
+    () => parseViewSnapshot(viewSnapshotJson),
+    [viewSnapshotJson]
+  );
+  const parsedColumnConfig = React.useMemo(
+    () => parseViewColumnConfig(viewColumnConfigJson),
+    [viewColumnConfigJson]
+  );
+  const [appliedColumnConfig, setAppliedColumnConfig] = React.useState(
+    parsedColumnConfig
+  );
+  const appliedColumnConfigRef = React.useRef(parsedColumnConfig);
+  const snapshotEnabled = Boolean(parsedSnapshot);
 
   const perfEnabled = React.useMemo((): boolean => {
     try {
@@ -649,8 +743,12 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     desc: false,
   });
 
-  const [dynCols, setDynCols] = React.useState<IColumn[] | undefined>(undefined);
-  const [dynBuffer, setDynBuffer] = React.useState<RowItem[]>([]);
+  const [dynCols, setDynCols] = React.useState<IColumn[] | undefined>(
+    parsedSnapshot?.columns as IColumn[] | undefined
+  );
+  const [dynBuffer, setDynBuffer] = React.useState<RowItem[]>(
+    (parsedSnapshot?.items as RowItem[] | undefined) || []
+  );
   const [dynNextToken, setDynNextToken] = React.useState<string | undefined>(undefined);
   const [dynLoading, setDynLoading] = React.useState<boolean>(false);
   const [dynLoadingMore, setDynLoadingMore] = React.useState<boolean>(false);
@@ -660,6 +758,18 @@ const VehiculosGrid: React.FC<Props> = (props) => {
   const [dynLookupOpts, setDynLookupOpts] = React.useState<
     Record<string, IDropdownOption[]>
   >({});
+  const dynLookupTextCacheRef = React.useRef<Record<string, Record<string, string>>>({});
+  const [columnEditorOpen, setColumnEditorOpen] = React.useState<boolean>(false);
+  const [columnEditorLoading, setColumnEditorLoading] = React.useState<boolean>(false);
+  const [columnEditorError, setColumnEditorError] = React.useState<string>("");
+  const [columnEditorEntries, setColumnEditorEntries] = React.useState<ViewColumnConfigEntry[]>(
+    []
+  );
+  const dragSourceIndexRef = React.useRef<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = React.useState<number | null>(null);
+  const [lockedQuickEditModalOpen, setLockedQuickEditModalOpen] = React.useState<boolean>(false);
+  const [lockedQuickEditModalField, setLockedQuickEditModalField] = React.useState<string>("");
+  const [lockedQuickEditModalTitle, setLockedQuickEditModalTitle] = React.useState<string>("");
 
   const requestSeq = React.useRef(0);
 
@@ -673,12 +783,94 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     dynTokenRef.current = dynNextToken;
   }, [dynNextToken]);
 
+  const snapshotCols = React.useMemo(
+    () => (snapshotEnabled && parsedSnapshot ? (parsedSnapshot.columns as IColumn[]) : undefined),
+    [parsedSnapshot, snapshotEnabled]
+  );
+  const snapshotItems = React.useMemo(
+    () => (snapshotEnabled && parsedSnapshot ? ((parsedSnapshot.items as RowItem[]) || []) : []),
+    [parsedSnapshot, snapshotEnabled]
+  );
+  const currentDynCols = snapshotCols ?? dynCols;
+  const currentDynBuffer = snapshotEnabled ? snapshotItems : dynBuffer;
+  const appliedColumnConfigEntries = React.useMemo(() => {
+    const configEntries =
+      appliedColumnConfig?.fields?.length ? appliedColumnConfig.fields : appliedColumnConfig?.columns;
+    return Array.isArray(configEntries) ? configEntries : [];
+  }, [appliedColumnConfig]);
+  const appliedColumnConfigMap = React.useMemo(() => {
+    const map = new Map<string, ViewColumnConfigEntry>();
+    appliedColumnConfigEntries.forEach((entry) => {
+      map.set(entry.internalName.trim().toLowerCase(), entry);
+    });
+    return map;
+  }, [appliedColumnConfigEntries]);
+  const activeDynCols = React.useMemo(() => {
+    const baseCols = currentDynCols || [];
+    if (!appliedColumnConfig || appliedColumnConfig.listId !== listId) return baseCols;
+    if (appliedColumnConfig.viewId && appliedColumnConfig.viewId !== viewId) return baseCols;
+
+    const byName = new Map<string, IColumn>();
+    baseCols.forEach((col) => {
+      const field = String(col.fieldName ?? col.key ?? "").trim().toLowerCase();
+      if (field && !byName.has(field)) byName.set(field, col);
+    });
+
+    const ordered: IColumn[] = [];
+    appliedColumnConfig.columns.forEach((entry) => {
+      if (!entry.visible) return;
+      const hit = byName.get(entry.internalName.trim().toLowerCase());
+      if (!hit) return;
+      ordered.push({
+        ...hit,
+        name: entry.title || hit.name,
+        fieldName: hit.fieldName ?? hit.key,
+      });
+    });
+
+    return ordered;
+  }, [currentDynCols, appliedColumnConfig, listId, viewId]);
+  const customGridMode = Boolean(appliedColumnConfig && appliedColumnConfig.listId === listId);
+  const isQuickEditLocked = React.useCallback(
+    (fieldName: string): boolean => {
+      const hit = appliedColumnConfigMap.get(String(fieldName || "").trim().toLowerCase());
+      return Boolean(hit && hit.editable === false);
+    },
+    [appliedColumnConfigMap]
+  );
+  const openLockedQuickEditModal = React.useCallback((fieldName: string, title: string): void => {
+    setLockedQuickEditModalField(String(fieldName || ""));
+    setLockedQuickEditModalTitle(String(title || fieldName || ""));
+    setLockedQuickEditModalOpen(true);
+  }, []);
+
+  React.useEffect(() => {
+    appliedColumnConfigRef.current = parsedColumnConfig;
+    setAppliedColumnConfig(parsedColumnConfig);
+  }, [parsedColumnConfig]);
+
   const isMountedRef = React.useRef<boolean>(true);
   React.useEffect(() => {
     return () => {
       isMountedRef.current = false;
     };
   }, []);
+
+  React.useEffect(() => {
+    if (!parsedSnapshot) return;
+
+    setDynCols(parsedSnapshot.columns as IColumn[]);
+    setDynBuffer((parsedSnapshot.items as RowItem[]) || []);
+    setDynNextToken(undefined);
+    setDynLoading(false);
+    setDynLoadingMore(false);
+    setDynSchema({});
+    setDynLookupOpts({});
+    setPageIndex(0);
+
+    dynLenRef.current = parsedSnapshot.items.length;
+    dynTokenRef.current = undefined;
+  }, [parsedSnapshot]);
 
   const {
     s,
@@ -696,11 +888,22 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     instanceKey,
   });
 
-  const isDynMode = Boolean(viewId);
+  const isDynMode = Boolean(viewId || appliedColumnConfig);
   const cacheKey = React.useMemo(
-    () => makeDynCacheKey({ service, viewId, toggleField, instanceKey }),
-    [service, viewId, toggleField, instanceKey]
+    () =>
+      makeDynCacheKey({
+        service,
+        viewId,
+        toggleField,
+        instanceKey,
+        columnConfigJson: viewColumnConfigJson || "",
+      }),
+    [service, viewId, toggleField, instanceKey, viewColumnConfigJson]
   );
+
+  React.useEffect(() => {
+    dynLookupTextCacheRef.current = {};
+  }, [cacheKey]);
 
   // =======================
   // ✅ Aprobación (normalizo props legacy + nuevas)
@@ -783,6 +986,21 @@ const VehiculosGrid: React.FC<Props> = (props) => {
   }, [approvalEnabled, approvalGroup, service]);
 
   const resetDyn = React.useCallback((): void => {
+    if (snapshotEnabled && parsedSnapshot) {
+      setDynCols(parsedSnapshot.columns as IColumn[]);
+      setDynBuffer((parsedSnapshot.items as RowItem[]) || []);
+      setDynNextToken(undefined);
+      setDynLoading(false);
+      setDynLoadingMore(false);
+      setDynSchema({});
+      setDynLookupOpts({});
+      setPageIndex(0);
+
+      dynLenRef.current = parsedSnapshot.items.length;
+      dynTokenRef.current = undefined;
+      return;
+    }
+
     setDynCols(undefined);
     setDynBuffer([]);
     setDynNextToken(undefined);
@@ -794,7 +1012,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
     dynLenRef.current = 0;
     dynTokenRef.current = undefined;
-  }, []);
+  }, [parsedSnapshot, snapshotEnabled]);
 
   const ensureDynSchema = React.useCallback(
     async (cols: IColumn[]): Promise<EditField[]> => {
@@ -836,6 +1054,24 @@ const VehiculosGrid: React.FC<Props> = (props) => {
       const hydrated = await svcAny.hydrateLookupTexts(rawRows, metas);
       if (!isMountedRef.current || seq !== requestSeq.current) return;
 
+      const lookupMetas = metas.filter((m) => m.type === "Lookup" || m.type === "User");
+      if (lookupMetas.length) {
+        const cache = dynLookupTextCacheRef.current;
+        for (const row of hydrated.items) {
+          const rowId = getRowId(row);
+          if (rowId === undefined) continue;
+
+          const rowCache = { ...(cache[String(rowId)] || {}) };
+          for (const meta of lookupMetas) {
+            const text = renderCellText((row as Record<string, unknown>)[meta.internalName]).trim();
+            if (text && text !== "[object Object]") {
+              rowCache[meta.internalName.toLowerCase()] = text;
+            }
+          }
+          cache[String(rowId)] = rowCache;
+        }
+      }
+
       if (baseLengthBefore === 0) {
         setDynBuffer(hydrated.items);
       } else {
@@ -860,6 +1096,22 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     const o = v as Record<string, unknown>;
     if ("results" in o && Array.isArray(o.results)) return o.results;
     return v;
+  }, []);
+
+  const getRowValueInsensitive = React.useCallback((row: RowItem, key: string): unknown => {
+    const target = String(key || "").trim();
+    if (!target) return undefined;
+
+    if (Object.prototype.hasOwnProperty.call(row, target)) return row[target];
+
+    const targetLower = target.toLowerCase();
+    for (const rowKey of Object.keys(row)) {
+      if (String(rowKey).toLowerCase() === targetLower) {
+        return row[rowKey];
+      }
+    }
+
+    return undefined;
   }, []);
 
   const stringify = React.useCallback(
@@ -1058,6 +1310,108 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     [renderCellText]
   );
 
+  const getDynDisplayText = React.useCallback(
+    (row: RowItem, fieldName: string, rawVal: unknown): string => {
+      const meta = dynSchema[fieldName];
+
+      if (meta?.type === "Boolean") {
+        return normalizeBooleanValue(rawVal) ? "Si" : "No";
+      }
+
+      if (meta && (meta.type === "Lookup" || meta.type === "User")) {
+        const rowId = getRowId(row);
+        const cachedText =
+          rowId !== undefined
+            ? dynLookupTextCacheRef.current[String(rowId)]?.[fieldName.toLowerCase()]
+            : undefined;
+        if (cachedText) return cachedText;
+
+        const opts = dynLookupOpts[fieldName];
+        const fromText = renderCellText(rawVal);
+        if (fromText && fromText !== "[object Object]") return fromText;
+
+        const idCandidates = [
+          rawVal,
+          getRowValueInsensitive(row, `${fieldName}Id`),
+          getRowValueInsensitive(row, `${fieldName}_Id`),
+          getRowValueInsensitive(row, `${fieldName}ID`),
+          getRowValueInsensitive(row, `${fieldName}Ids`),
+          getRowValueInsensitive(row, `${fieldName}_Ids`),
+        ];
+
+        const titleCandidates = [
+          getRowValueInsensitive(row, `${fieldName}Title`),
+          getRowValueInsensitive(row, `${fieldName}_Title`),
+          getRowValueInsensitive(row, `${fieldName}Name`),
+          getRowValueInsensitive(row, `${fieldName}.Title`),
+          getRowValueInsensitive(row, `${fieldName}.title`),
+        ];
+        for (const candidate of titleCandidates) {
+          const text = renderCellText(candidate).trim();
+          if (text && text !== "[object Object]") return text;
+        }
+
+        const ids = idCandidates.reduce<Array<number | string>>(
+          (acc, cand) => acc.concat(extractIds(cand)),
+          []
+        );
+
+        if (ids.length && opts && opts.length) {
+          const txt = ids
+            .map((id) => opts.find((o) => String(o.key) === String(id))?.text)
+            .filter(Boolean)
+            .join(", ");
+          if (txt) return txt;
+        }
+
+        if (typeof rawVal === "object" && rawVal) {
+          const o = rawVal as Record<string, unknown>;
+          const candidate =
+            String(o.Title ?? o.title ?? o.Name ?? o.text ?? o.Email ?? o.EMail ?? "").trim();
+          if (candidate) return candidate;
+        }
+
+        return "";
+      }
+
+      if (meta?.type === "DateTime") return formatDateOnly(rawVal);
+      if (meta?.type === "Calculated") return trimCalculatedDecimals(rawVal);
+      if (meta?.type === "MultiChoice") return Array.isArray(rawVal) ? rawVal.join(", ") : "";
+
+      return renderCellText(rawVal);
+    },
+    [dynLookupOpts, dynSchema, extractIds, formatDateOnly, renderCellText, trimCalculatedDecimals]
+  );
+
+  const renderLockedQuickEditCell = React.useCallback(
+    (fieldName: string, title: string, value: unknown): JSX.Element => {
+      const text = renderCellText(value) || "No editable";
+
+      return (
+        <span
+          role="button"
+          tabIndex={0}
+          title={`${title || fieldName} no se edita desde la grilla`}
+          onClick={() => openLockedQuickEditModal(fieldName, title)}
+          onKeyDown={(ev) => {
+            if (ev.key === "Enter" || ev.key === " ") {
+              ev.preventDefault();
+              openLockedQuickEditModal(fieldName, title);
+            }
+          }}
+          style={{
+            cursor: "pointer",
+            color: "#605e5c",
+            textDecoration: "underline dotted",
+          }}
+        >
+          {text}
+        </span>
+      );
+    },
+    [openLockedQuickEditModal, renderCellText]
+  );
+
   const getSortable = React.useCallback(
     (v: unknown): string | number => {
       if (v === null || v === undefined) return "";
@@ -1117,12 +1471,18 @@ const VehiculosGrid: React.FC<Props> = (props) => {
   const fetchDynBatch = React.useCallback(
     async (opts: { initial: boolean }): Promise<{ bufferLen: number; nextToken?: string }> => {
       const t0 = perfNow();
-      if (!viewId)
+      if (!isDynMode)
         return { bufferLen: dynLenRef.current, nextToken: dynTokenRef.current };
       if (!isMountedRef.current)
         return { bufferLen: dynLenRef.current, nextToken: dynTokenRef.current };
 
       const seq = ++requestSeq.current;
+      const activeColumnConfig = appliedColumnConfigRef.current;
+      const useCustomListMode = Boolean(
+        activeColumnConfig &&
+          activeColumnConfig.listId === listId &&
+          activeColumnConfig.columns.length > 0
+      );
 
       try {
         if (!isMountedRef.current)
@@ -1136,6 +1496,16 @@ const VehiculosGrid: React.FC<Props> = (props) => {
         }
 
         const svcAny = service as unknown as {
+          getListGridPaged?: (
+            listId: string,
+            pageSize: number,
+            nextToken?: string,
+            options?: { resolveLookups?: boolean }
+          ) => Promise<{
+            columns?: ViewGridColumn[];
+            items?: RowItem[];
+            nextToken?: string;
+          }>;
           getViewGridPaged?: (
             viewId: string,
             pageSize: number,
@@ -1150,9 +1520,89 @@ const VehiculosGrid: React.FC<Props> = (props) => {
             nextToken?: string;
           }>;
         };
+        const viewIdSafe = String(viewId ?? "").trim();
+
+        if (useCustomListMode) {
+          const full: {
+            columns?: ViewGridColumn[];
+            items?: RowItem[];
+            nextToken?: string;
+          } =
+            typeof svcAny.getListGridPaged === "function"
+              ? await svcAny.getListGridPaged!(
+                  listId,
+                  FETCH_BATCH,
+                  opts.initial ? undefined : dynTokenRef.current,
+                  { resolveLookups: false }
+                )
+              : (() => {
+                  throw new Error(
+                    "El service no implementa getListGridPaged, necesario para el modo de snapshot personalizado."
+                  );
+                })();
+
+          if (!isMountedRef.current || seq !== requestSeq.current)
+            return { bufferLen: dynLenRef.current, nextToken: dynTokenRef.current };
+
+          const cols: IColumn[] = ((full.columns || []) as ViewGridColumn[]).map((c) => ({
+            key: c.key,
+            name: c.name,
+            fieldName: c.fieldName,
+            minWidth: c.minWidth ?? 100,
+            isResizable: c.isResizable ?? true,
+          }));
+
+          const orderedCols =
+            activeColumnConfig?.columns
+              ?.filter((entry) => entry.visible)
+              .map((entry) => {
+                const hit = cols.find(
+                  (col) =>
+                    String(col.fieldName ?? col.key ?? "").trim().toLowerCase() ===
+                    entry.internalName.trim().toLowerCase()
+                );
+                if (!hit) return undefined;
+                return {
+                  ...hit,
+                  name: entry.title || hit.name,
+                  fieldName: hit.fieldName ?? hit.key,
+                } as IColumn;
+              })
+              .filter((col): col is IColumn => Boolean(col)) || [];
+
+          setDynCols(orderedCols);
+          const metas = await ensureDynSchema(orderedCols);
+
+          const rawItems = Array.isArray(full.items) ? (full.items as RowItem[]) : [];
+          const newItems =
+            !isFiltered && sort.field
+              ? sortItemsLocal(rawItems, sort.field, sort.desc)
+              : rawItems;
+          const baseLenBefore = dynLenRef.current;
+          setDynBuffer(newItems);
+          setDynNextToken(full.nextToken);
+
+          dynLenRef.current = newItems.length;
+          dynTokenRef.current = full.nextToken;
+
+          if (opts.initial) {
+            await hydrateDynRows(newItems, metas, seq, baseLenBefore);
+          }
+
+          perfLog("fetchDynBatch.list", t0, {
+            initial: opts.initial,
+            rows: newItems.length,
+            nextToken: dynTokenRef.current ? "yes" : "no",
+          });
+          return { bufferLen: dynLenRef.current, nextToken: dynTokenRef.current };
+        }
 
         if (typeof svcAny.getViewGridPaged !== "function") {
-          const full = await service.getViewGrid(viewId, toggleField, {
+          if (!viewIdSafe) {
+            throw new Error("viewId requerido");
+          }
+
+          const full = await service.getViewGrid(viewIdSafe, toggleField, {
             resolveLookups: false,
           });
           if (!isMountedRef.current || seq !== requestSeq.current)
@@ -1181,7 +1631,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
           dynTokenRef.current = undefined;
 
           if (opts.initial) {
-            hydrateDynRows(newItems, metas, seq, baseLenBefore).catch(() => {});
+            await hydrateDynRows(newItems, metas, seq, baseLenBefore);
           }
 
           perfLog("fetchDynBatch.fallback", t0, {
@@ -1203,8 +1653,12 @@ const VehiculosGrid: React.FC<Props> = (props) => {
           items?: RowItem[];
           nextToken?: string;
         }> => {
+          if (!viewIdSafe) {
+            throw new Error("viewId requerido");
+          }
+
           return svcAny.getViewGridPaged!(
-            viewId,
+            viewIdSafe,
             FETCH_BATCH,
             opts.initial ? undefined : dynTokenRef.current,
             toggleField,
@@ -1295,7 +1749,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
           ? newItems.length
           : dynLenRef.current + newItems.length;
 
-        hydrateDynRows(newItems, metas, seq, baseLenBefore).catch(() => {});
+        await hydrateDynRows(newItems, metas, seq, baseLenBefore);
 
         perfLog("fetchDynBatch.paged", t0, {
           initial: opts.initial,
@@ -1313,6 +1767,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     },
     [
       service,
+      listId,
       viewId,
       toggleField,
       ensureDynSchema,
@@ -1329,6 +1784,13 @@ const VehiculosGrid: React.FC<Props> = (props) => {
   const hardRefresh = React.useCallback((): void => {
     if (!isMountedRef.current) return;
 
+    if (snapshotEnabled) {
+      if (typeof onCaptureViewSnapshot === "function") {
+        Promise.resolve(onCaptureViewSnapshot()).catch(() => {});
+      }
+      return;
+    }
+
     if (!isVisible) {
       clearDynCache(cacheKey);
       resetDyn();
@@ -1343,12 +1805,26 @@ const VehiculosGrid: React.FC<Props> = (props) => {
       resetDyn();
       fetchDynBatch({ initial: true }).catch(() => {});
     }
-  }, [isVisible, refresh, isDynMode, cacheKey, resetDyn, fetchDynBatch]);
+  }, [
+    isVisible,
+    refresh,
+    isDynMode,
+    cacheKey,
+    resetDyn,
+    fetchDynBatch,
+    snapshotEnabled,
+    onCaptureViewSnapshot,
+  ]);
 
   React.useEffect(() => {
     if (!isVisible) return;
 
-    if (!viewId) {
+    if (snapshotEnabled) {
+      resetDyn();
+      return;
+    }
+
+    if (!isDynMode) {
       resetDyn();
       return;
     }
@@ -1373,11 +1849,12 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     resetDyn();
     fetchDynBatch({ initial: true }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isVisible, viewId, cacheKey, resetDyn, fetchDynBatch]);
+  }, [isVisible, isDynMode, cacheKey, resetDyn, fetchDynBatch, snapshotEnabled]);
 
   const loadMoreIfNeeded = React.useCallback(
     async (targetPageIndex: number): Promise<void> => {
-      if (!viewId) return;
+      if (snapshotEnabled) return;
+      if (!isDynMode) return;
       if (isFiltered) return;
       if (dynLoading || dynLoadingMore) return;
 
@@ -1393,7 +1870,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
         fetchDynBatch({ initial: false }).catch(() => {});
       }
     },
-    [viewId, isFiltered, dynLoading, dynLoadingMore, fetchDynBatch]
+    [isDynMode, isFiltered, dynLoading, dynLoadingMore, fetchDynBatch, snapshotEnabled]
   );
 
   const { headerClass, listWrapper, classes, modalHeader, modalBody, titleBar, titleText } =
@@ -1419,16 +1896,16 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     };
   }, [enableSemaforo, service, tipoConfigListTitle, tipoConfigKeyField]);
 
-  const dynSource = React.useMemo((): RowItem[] | undefined => (viewId ? dynBuffer : undefined), [
-    viewId,
-    dynBuffer,
+  const dynSource = React.useMemo((): RowItem[] | undefined => (isDynMode ? currentDynBuffer : undefined), [
+    isDynMode,
+    currentDynBuffer,
   ]);
 
   const itemsFiltered = React.useMemo(() => {
     const q = qTrim.toLowerCase();
 
     if (dynSource) {
-      const source = isFiltered ? filterSnap ?? dynBuffer : dynBuffer;
+      const source = isFiltered ? filterSnap ?? currentDynBuffer : currentDynBuffer;
       if (!q) return source;
 
       return source.filter((it) => {
@@ -1447,7 +1924,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
         proveedorTextLocal.toLowerCase().includes(q)
       );
     });
-  }, [dynSource, s.items, qTrim, stringify, isFiltered, filterSnap, dynBuffer]);
+  }, [dynSource, s.items, qTrim, stringify, isFiltered, filterSnap, currentDynBuffer]);
 
   const itemsFilteredSorted = React.useMemo(() => {
     if (!sort.field) return itemsFiltered;
@@ -1464,11 +1941,12 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
   React.useEffect(() => {
     if (!isDynMode) return;
+    if (snapshotEnabled) return;
     if (dynTokenRef.current) return;
 
     const maxIdx = Math.max(0, Math.ceil(totalFiltered / UI_PAGE_SIZE) - 1);
     setPageIndex((p) => Math.min(p, maxIdx));
-  }, [isDynMode, totalFiltered]);
+  }, [isDynMode, totalFiltered, snapshotEnabled]);
 
   const pageItems = React.useMemo(() => {
     if (!isDynMode) return itemsFilteredSorted;
@@ -1478,12 +1956,14 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
   React.useEffect(() => {
     if (!isDynMode) return;
+    if (snapshotEnabled) return;
     loadMoreIfNeeded(pageIndex).catch(() => {});
-  }, [isDynMode, pageIndex, loadMoreIfNeeded]);
+  }, [isDynMode, pageIndex, loadMoreIfNeeded, snapshotEnabled]);
 
   React.useEffect(() => {
     if (!isDynMode) return;
-    if (!viewId) return;
+    if (snapshotEnabled) return;
+    if (!isDynMode) return;
     if (isFiltered) return;
 
     requestSeq.current += 1;
@@ -1491,7 +1971,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     resetDyn();
     fetchDynBatch({ initial: true }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDynMode, viewId, isFiltered, sort.field, sort.desc]);
+  }, [isDynMode, viewId, isFiltered, sort.field, sort.desc, snapshotEnabled]);
 
   React.useEffect(() => {
     if (!isDynMode) return;
@@ -2067,8 +2547,8 @@ const VehiculosGrid: React.FC<Props> = (props) => {
       if (!allowRelatedEdit) return;
       if (!relEditListId || !relatedEditViewId) return;
 
-      const itemId = item.Id ?? item.ID ?? item.id;
-      if (!itemId) return;
+      const itemId = getRowId(item);
+      if (itemId === undefined) return;
 
       setRelEditOpen(true);
       setRelEditLoading(true);
@@ -2144,10 +2624,12 @@ const VehiculosGrid: React.FC<Props> = (props) => {
   const csvEscape = csvEscapeHelper;
 
   const buildExportRows = (): ExportRows => {
-    if (dynCols && isDynMode) {
-      const headers = dynCols.map((c) => c.name);
+    if (activeDynCols && isDynMode) {
+      const headers = activeDynCols.map((c) => c.name);
       const rows = (itemsFilteredSorted as RowItem[]).map((it) =>
-        dynCols.map((c) => renderCellText((it as Record<string, unknown>)[c.fieldName ?? c.key]))
+        activeDynCols.map((c) =>
+          renderCellText((it as Record<string, unknown>)[c.fieldName ?? c.key])
+        )
       );
       return { headers, rows };
     }
@@ -2248,7 +2730,8 @@ const VehiculosGrid: React.FC<Props> = (props) => {
       onRender: (it?: unknown) => {
         if (!it) return undefined;
         const row = it as RowItem;
-        const isEditing = s.editingId === getRowId(row);
+        const rowId = getRowId(row);
+        const isEditing = s.editingId !== undefined && rowId !== undefined && s.editingId === rowId;
 
         return isEditing ? (
           <TextField
@@ -2270,7 +2753,8 @@ const VehiculosGrid: React.FC<Props> = (props) => {
       onRender: (it?: unknown) => {
         if (!it) return undefined;
         const row = it as Vehiculo;
-        const isEditing = s.editingId === getRowId(it as unknown as RowItem);
+        const rowId = getRowId(it as unknown as RowItem);
+        const isEditing = s.editingId !== undefined && rowId !== undefined && s.editingId === rowId;
 
         return isEditing ? (
           <Dropdown
@@ -2313,9 +2797,9 @@ const VehiculosGrid: React.FC<Props> = (props) => {
   }
 
   const editableDynCols: IColumn[] | undefined = React.useMemo(() => {
-    if (!dynCols) return undefined;
+    if (!currentDynCols) return customGridMode ? [] : undefined;
 
-    return dynCols.map((c) => {
+    return activeDynCols.map((c) => {
       const fieldName = c.fieldName ?? c.key;
 
       return {
@@ -2325,10 +2809,17 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
           const row = it as RowItem;
           const rowId = getRowId(row);
-          const isEditing = s.editingId === rowId;
+          const isEditing = s.editingId !== undefined && rowId !== undefined && s.editingId === rowId;
 
           const rawVal = row[fieldName];
           const meta = dynSchema[fieldName];
+          const quickEditLocked = isQuickEditLocked(fieldName);
+          const fieldTitle = c.name || fieldName;
+          const displayValue = getDynDisplayText(row, fieldName, rawVal);
+
+          if (quickEditLocked) {
+            return renderLockedQuickEditCell(fieldName, fieldTitle, displayValue);
+          }
 
           // display
           if (!isEditing) {
@@ -2579,7 +3070,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
       };
     });
   }, [
-    dynCols,
+    activeDynCols,
     dynSchema,
     dynLookupOpts,
     s.editingId,
@@ -2588,6 +3079,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     renderCellText,
     extractIds,
     unwrapResults,
+    customGridMode,
   ]);
 
   // ✅ acciones: ahora solo 2 (aprobar/rechazar) si canApprove
@@ -2603,11 +3095,11 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
       const row = it as RowItem;
       const thisId = getRowId(row);
-      const isEditing = s.editingId === thisId;
+      const isEditing = s.editingId !== undefined && thisId !== undefined && s.editingId === thisId;
 
       const real = (s.items as Vehiculo[]).find(
         (r) => getRowId(r as unknown as RowItem) === thisId
-      );
+      ) || (row as Vehiculo);
 
       return isEditing ? (
         <Stack horizontal tokens={{ childrenGap: 4 }}>
@@ -2730,10 +3222,212 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
   const canAdd = s.canEdit && showAdd && !isDynMode;
   const exportDisabledDyn = isDynMode && totalFiltered === 0;
+  const refreshButtonText = snapshotEnabled ? "Actualizar snapshot" : "Refrescar";
+  const refreshButtonIcon = snapshotEnabled ? "Save" : "Refresh";
 
   const showOverlaySpinner =
     (isDynMode ? dynLoading : s.loading) &&
-    (isDynMode ? dynBuffer.length : (s.items as unknown[]).length) > 0;
+    (isDynMode ? currentDynBuffer.length : (s.items as unknown[]).length) > 0;
+
+  const openColumnEditor = React.useCallback(async (): Promise<void> => {
+    if (!listId) return;
+
+    setColumnEditorOpen(true);
+    setColumnEditorLoading(true);
+    setColumnEditorError("");
+    setDragOverIndex(null);
+    dragSourceIndexRef.current = null;
+
+    try {
+      const fields = await service.getListFields(listId);
+      const savedEntries =
+        appliedColumnConfig &&
+        appliedColumnConfig.listId === listId &&
+        (!appliedColumnConfig.viewId || appliedColumnConfig.viewId === viewId)
+          ? appliedColumnConfig.fields?.length
+            ? appliedColumnConfig.fields
+            : appliedColumnConfig.columns
+          : [];
+
+      const existingMap = new Map<string, ViewColumnConfigEntry>();
+      savedEntries.forEach((entry) => {
+        existingMap.set(entry.internalName.toLowerCase(), entry);
+      });
+
+      const nextEntries: ViewColumnConfigEntry[] = [];
+      fields.forEach((field, index) => {
+        const hit = existingMap.get(field.internalName.toLowerCase());
+      nextEntries.push({
+        internalName: field.internalName,
+        title: hit?.title || field.title,
+        type: field.type,
+        visible: hit ? hit.visible !== false : true,
+        editable: hit ? hit.editable !== false : true,
+        order: hit && typeof hit.order === "number" ? hit.order : index,
+      });
+    });
+
+      const unknownExisting = savedEntries.filter(
+        (entry) =>
+          !fields.some(
+            (field) => field.internalName.toLowerCase() === entry.internalName.toLowerCase()
+          )
+      );
+      unknownExisting.forEach((entry) => {
+        nextEntries.push({ ...entry });
+      });
+
+      nextEntries.sort((a, b) => a.order - b.order);
+      setColumnEditorEntries(nextEntries);
+    } catch (error) {
+      setColumnEditorError(
+        error instanceof Error ? error.message : "No se pudieron cargar los campos de la lista."
+      );
+      setColumnEditorEntries([]);
+    } finally {
+      setColumnEditorLoading(false);
+    }
+  }, [appliedColumnConfig, listId, service, viewId]);
+
+  const toggleColumnVisibility = React.useCallback((internalName: string): void => {
+    const target = String(internalName || "").toLowerCase();
+    setColumnEditorEntries((prev) =>
+      prev.map((entry) =>
+        entry.internalName.toLowerCase() === target
+          ? { ...entry, visible: !entry.visible }
+          : entry
+      )
+    );
+  }, []);
+
+  const toggleColumnEditable = React.useCallback((internalName: string): void => {
+    const target = String(internalName || "").toLowerCase();
+    setColumnEditorEntries((prev) =>
+      prev.map((entry) =>
+        entry.internalName.toLowerCase() === target
+          ? { ...entry, editable: entry.editable === false }
+          : entry
+      )
+    );
+  }, []);
+
+  const moveColumn = React.useCallback((internalName: string, delta: -1 | 1): void => {
+    const target = String(internalName || "").toLowerCase();
+    setColumnEditorEntries((prev) => {
+      const idx = prev.findIndex((entry) => entry.internalName.toLowerCase() === target);
+      if (idx < 0) return prev;
+
+      const nextIdx = idx + delta;
+      if (nextIdx < 0 || nextIdx >= prev.length) return prev;
+
+      const copy = prev.slice();
+      const tmp = copy[idx];
+      copy[idx] = copy[nextIdx];
+      copy[nextIdx] = tmp;
+
+      return copy.map((entry, order) => ({ ...entry, order }));
+    });
+  }, []);
+
+  const setAllColumnVisibility = React.useCallback((visible: boolean): void => {
+    setColumnEditorEntries((prev) =>
+      prev.map((entry, order) => ({
+        ...entry,
+        visible,
+        order,
+      }))
+    );
+  }, []);
+
+  const reorderColumnByIndex = React.useCallback((fromIndex: number, toIndex: number): void => {
+    setColumnEditorEntries((prev) => {
+      if (fromIndex < 0 || fromIndex >= prev.length) return prev;
+      if (toIndex < 0 || toIndex >= prev.length) return prev;
+      if (fromIndex === toIndex) return prev;
+
+      const copy = prev.slice();
+      const [moved] = copy.splice(fromIndex, 1);
+      copy.splice(toIndex, 0, moved);
+      return copy.map((entry, order) => ({ ...entry, order }));
+    });
+  }, []);
+
+  const allColumnsVisible = React.useMemo(
+    () => columnEditorEntries.length > 0 && columnEditorEntries.every((entry) => entry.visible),
+    [columnEditorEntries]
+  );
+  const someColumnsVisible = React.useMemo(
+    () => columnEditorEntries.some((entry) => entry.visible),
+    [columnEditorEntries]
+  );
+
+  const handleColumnDragStart = React.useCallback((index: number): void => {
+    dragSourceIndexRef.current = index;
+  }, []);
+
+  const handleColumnDragOver = React.useCallback((ev: React.DragEvent<HTMLElement>, index: number): void => {
+    ev.preventDefault();
+    setDragOverIndex(index);
+  }, []);
+
+  const handleColumnDrop = React.useCallback((ev: React.DragEvent<HTMLElement>, index: number): void => {
+    ev.preventDefault();
+    const fromIndex = dragSourceIndexRef.current;
+    dragSourceIndexRef.current = null;
+    setDragOverIndex(null);
+    if (fromIndex === null || fromIndex === undefined) return;
+    reorderColumnByIndex(fromIndex, index);
+  }, [reorderColumnByIndex]);
+
+  const handleColumnDragEnd = React.useCallback((): void => {
+    dragSourceIndexRef.current = null;
+    setDragOverIndex(null);
+  }, []);
+
+  const saveColumnEditor = React.useCallback(async (): Promise<void> => {
+    if (!listId || !onSaveViewColumnConfig) return;
+
+    const config = buildViewColumnConfig({
+      listId,
+      columns: columnEditorEntries,
+      capturedAt: new Date().toISOString(),
+    });
+
+    appliedColumnConfigRef.current = config;
+    await Promise.resolve(onSaveViewColumnConfig(stringifyViewColumnConfig(config)));
+    setAppliedColumnConfig(config);
+    if (isDynMode && !snapshotEnabled) {
+      requestSeq.current += 1;
+      clearDynCache(cacheKey);
+      resetDyn();
+      fetchDynBatch({ initial: true }).catch(() => {});
+    }
+    setColumnEditorOpen(false);
+  }, [
+    cacheKey,
+    columnEditorEntries,
+    fetchDynBatch,
+    isDynMode,
+    listId,
+    onSaveViewColumnConfig,
+    resetDyn,
+    snapshotEnabled,
+    toggleField,
+  ]);
+
+  const hasSeenColumnEditorNonceRef = React.useRef<boolean>(false);
+  const lastColumnEditorNonceRef = React.useRef<number | undefined>(undefined);
+  React.useEffect(() => {
+    if (columnEditorOpenNonce === undefined) return;
+    if (!hasSeenColumnEditorNonceRef.current) {
+      hasSeenColumnEditorNonceRef.current = true;
+      lastColumnEditorNonceRef.current = columnEditorOpenNonce;
+      return;
+    }
+    if (lastColumnEditorNonceRef.current === columnEditorOpenNonce) return;
+    lastColumnEditorNonceRef.current = columnEditorOpenNonce;
+    openColumnEditor().catch(() => undefined);
+  }, [columnEditorOpenNonce, openColumnEditor]);
 
   const cmdItems = [
     ...(canAdd
@@ -2756,8 +3450,8 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     },
     {
       key: "refresh",
-      text: "Refrescar",
-      iconProps: { iconName: "Refresh" },
+      text: refreshButtonText,
+      iconProps: { iconName: refreshButtonIcon },
       onClick: () => hardRefresh(),
     },
   ];
@@ -2789,7 +3483,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
   };
 
   // ================= render =================
-  if ((s.loading && !isDynMode) || (isDynMode && dynLoading && dynBuffer.length === 0)) {
+  if ((s.loading && !isDynMode) || (isDynMode && dynLoading && currentDynBuffer.length === 0)) {
     return (
       <div className="cnco-vehiculos-shell">
         <ThemeProvider theme={appTheme}>
@@ -2872,6 +3566,183 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     );
   };
 
+  const renderCustomGridTable = (): JSX.Element | undefined => {
+    if (!customGridMode) return undefined;
+
+    return (
+      <div className="cnco-html-grid-wrap">
+        <table className="cnco-html-grid" role="grid">
+          <thead>
+            <tr>
+              {columns.map((col) => {
+                const field = col.fieldName ?? col.key;
+                const isSortable = col.key !== "acciones" && col.key !== "semaforo" && Boolean(field);
+                const isSorted = sort.field === field;
+                const width = typeof col.minWidth === "number" && col.minWidth > 0 ? col.minWidth : undefined;
+
+                return (
+                  <th
+                    key={col.key}
+                    className={isSortable ? "cnco-sortable" : undefined}
+                    style={width ? { width, minWidth: width, maxWidth: width } : undefined}
+                    onClick={
+                      isSortable
+                        ? () => {
+                            onColumnClick(undefined, col);
+                          }
+                        : undefined
+                    }
+                    role={isSortable ? "button" : undefined}
+                    aria-sort={isSorted ? (sort.desc ? "descending" : "ascending") : "none"}
+                  >
+                    <div className="cnco-head-inner">
+                      <span>{col.name}</span>
+                      {isSorted ? <span aria-hidden="true">{sort.desc ? "v" : "^"}</span> : null}
+                    </div>
+                  </th>
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            {pageItems.map((item, rowIndex) => {
+              const row = item as RowItem;
+              const rowId = getRowId(row);
+              const isEditing =
+                s.editingId !== undefined && rowId !== undefined && s.editingId === rowId;
+              const actionRow = {
+                ...row,
+                id: rowId,
+                Id: rowId,
+                ID: rowId,
+                ItemId: rowId,
+                ID_x0020_: rowId,
+                Id_x0020_: rowId,
+              } as unknown as Vehiculo;
+
+              return (
+                <tr
+                  key={String(rowId ?? rowIndex)}
+                  className={isEditing ? "cnco-row-editing" : "cnco-row"}
+                >
+                  {columns.map((col) => {
+                    const fieldName = col.fieldName ?? col.key;
+                    const width =
+                      typeof col.minWidth === "number" && col.minWidth > 0
+                        ? col.minWidth
+                        : undefined;
+                    let content: React.ReactNode;
+
+                    if (col.key === "acciones") {
+                      content = isEditing ? (
+                        <Stack horizontal tokens={{ childrenGap: 4 }}>
+                          <IconButton
+                            iconProps={{ iconName: "CheckMark" }}
+                            title="Confirmar"
+                            onClick={() =>
+                              confirm()
+                                .then(() => {
+                                  if (isDynMode) hardRefresh();
+                                })
+                                .catch(() => {})
+                            }
+                            disabled={s.saving || approvalBusy}
+                          />
+                          <IconButton
+                            iconProps={{ iconName: "Cancel" }}
+                            title="Cancelar"
+                            onClick={() => cancel()}
+                            disabled={s.saving || approvalBusy}
+                          />
+                        </Stack>
+                      ) : (
+                        <Stack horizontal tokens={{ childrenGap: 4 }}>
+                          {showEdit && (
+                            <IconButton
+                              iconProps={{ iconName: "Edit" }}
+                              title="Editar"
+                              onClick={() => {
+                                if (rowId === undefined) return;
+                                enterEdit(actionRow);
+                              }}
+                              disabled={approvalBusy || rowId === undefined}
+                            />
+                          )}
+                          {showDelete && rowId !== undefined && (
+                            <IconButton
+                              iconProps={{ iconName: "Delete" }}
+                              title="Borrar"
+                              onClick={() => remove(rowId).catch(() => {})}
+                              disabled={approvalBusy}
+                            />
+                          )}
+                          {toggleField && showToggle && rowId !== undefined && (
+                            <IconButton
+                              iconProps={{ iconName: actionRow.toggle ? "CircleStop" : "Play" }}
+                              title={actionRow.toggle ? "Desactivar" : "Activar"}
+                              onClick={() => toggleActive(actionRow).catch(() => {})}
+                              disabled={approvalBusy}
+                            />
+                          )}
+                          {canApprove && rowId !== undefined && approvalFieldsValid && (
+                            <>
+                              <IconButton
+                                iconProps={{ iconName: "CompletedSolid" }}
+                                title="Aprobar"
+                                onClick={() => onClickApprove(row)}
+                                disabled={approvalBusy}
+                              />
+                              <IconButton
+                                iconProps={{ iconName: "StatusErrorFull" }}
+                                title="Rechazar"
+                                onClick={() => onClickReject(row)}
+                                disabled={approvalBusy}
+                              />
+                            </>
+                          )}
+                          {showDownloadAttachments && (
+                            <IconButton
+                              iconProps={{ iconName: "Download" }}
+                              title="Descargar adjuntos"
+                              onClick={() => descargarAdjuntos(actionRow).catch(() => {})}
+                              disabled={approvalBusy}
+                            />
+                          )}
+                          {relatedListId && relatedParentField && relatedChildField && (
+                            <IconButton
+                              iconProps={{ iconName: "FileTemplate" }}
+                              title="Documentos relacionados"
+                              onClick={() => openRelated(row).catch(() => {})}
+                              disabled={approvalBusy}
+                            />
+                          )}
+                        </Stack>
+                      );
+                    } else if (isEditing && col.onRender) {
+                      content = col.onRender(row, rowIndex, col);
+                    } else {
+                      content = <span>{getDynDisplayText(row, fieldName, row[fieldName])}</span>;
+                    }
+
+                    return (
+                      <td
+                        key={`${String(rowId ?? rowIndex)}-${col.key}`}
+                        style={width ? { width, minWidth: width, maxWidth: width } : undefined}
+                        className={col.key === "acciones" ? "cnco-actions-cell" : undefined}
+                      >
+                        {content}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
   const hasDownloadableRelatedItems =
     allowRelatedDownloadAttachments &&
     relItems.some((item) => {
@@ -2939,28 +3810,32 @@ const VehiculosGrid: React.FC<Props> = (props) => {
               </Stack>
 
               <div className={listWrapper} style={{ position: "relative" }}>
-                <DetailsList
-                  items={pageItems}
-                  columns={columns}
-                  selectionMode={SelectionMode.none}
-                  constrainMode={ConstrainMode.horizontalConstrained}
-                  onRenderRow={onRenderRow}
-                  onRenderDetailsHeader={onRenderDetailsHeader}
-                  compact={isMobile}
-                  styles={{ root: { width: "100%" } }}
-                  onRenderItemColumn={
-                    isDynMode
-                      ? (item?: unknown, _i?: number, col?: IColumn) => {
-                          if (!item || !col) return undefined;
-                          if (col.onRender) return col.onRender(item, _i, col);
+                {customGridMode ? (
+                  renderCustomGridTable()
+                ) : (
+                  <DetailsList
+                    items={pageItems}
+                    columns={columns}
+                    selectionMode={SelectionMode.none}
+                    constrainMode={ConstrainMode.horizontalConstrained}
+                    onRenderRow={onRenderRow}
+                    onRenderDetailsHeader={onRenderDetailsHeader}
+                    compact={isMobile}
+                    styles={{ root: { width: "100%" } }}
+                    onRenderItemColumn={
+                      isDynMode
+                        ? (item?: unknown, _i?: number, col?: IColumn) => {
+                            if (!item || !col) return undefined;
+                            if (col.onRender) return col.onRender(item, _i, col);
 
-                          const row = item as RowItem;
-                          const v = row[col.fieldName ?? col.key];
-                          return renderCellText(v);
-                        }
-                      : undefined
-                  }
-                />
+                            const row = item as RowItem;
+                            const v = row[col.fieldName ?? col.key];
+                            return renderCellText(v);
+                          }
+                        : undefined
+                    }
+                  />
+                )}
 
                 {renderPagination()}
 
@@ -3055,6 +3930,217 @@ const VehiculosGrid: React.FC<Props> = (props) => {
                   }}
                   disabled={approvalBusy}
                 />
+              </Stack>
+            </div>
+          </Modal>
+
+          {/* ===== Modal columnas ===== */}
+          <Modal
+            isOpen={columnEditorOpen}
+            onDismiss={() => {
+              if (columnEditorLoading) return;
+              setColumnEditorOpen(false);
+              setColumnEditorError("");
+            }}
+            isBlocking={true}
+            allowTouchBodyScroll
+            styles={{
+              root: { zIndex: 100000 },
+              layer: { zIndex: 100000 },
+              main: {
+                zIndex: 100001,
+                width: isMobile ? "96vw" : "78vw",
+                maxWidth: "980px",
+                borderRadius: 12,
+                overflow: "hidden",
+              },
+              scrollableContent: { zIndex: 100001 },
+            }}
+          >
+            <div className={modalHeader}>
+              <span style={{ fontWeight: 600 }}>Campos de la lista</span>
+              <IconButton
+                iconProps={{ iconName: "Cancel" }}
+                styles={{ root: { color: "#fff" } }}
+                onClick={() => {
+                  if (columnEditorLoading) return;
+                  setColumnEditorOpen(false);
+                  setColumnEditorError("");
+                }}
+                ariaLabel="Cerrar"
+              />
+            </div>
+
+            <div className={modalBody}>
+              {columnEditorLoading ? (
+                <Spinner label="Cargando campos..." />
+              ) : (
+                <Stack tokens={{ childrenGap: 10 }}>
+                  <div style={{ color: "#605e5c" }}>
+                    Elegí qué campos mostrar, ocultá los que no quieras y ordenalos antes de guardar la configuración.
+                  </div>
+
+                  <Stack
+                    horizontal
+                    verticalAlign="center"
+                    horizontalAlign="space-between"
+                    tokens={{ childrenGap: 8 }}
+                    styles={{ root: { padding: "8px 10px", background: "#f8f9fb", borderRadius: 8 } }}
+                  >
+                    <Checkbox
+                      label="Mostrar todos"
+                      checked={allColumnsVisible}
+                      indeterminate={!allColumnsVisible && someColumnsVisible}
+                      onChange={(_, checked) => setAllColumnVisibility(Boolean(checked))}
+                    />
+                    <span style={{ fontSize: 12, color: "#605e5c" }}>
+                      {columnEditorEntries.filter((entry) => entry.visible).length} de{" "}
+                      {columnEditorEntries.length} visibles
+                    </span>
+                  </Stack>
+
+                  {columnEditorError && (
+                    <div style={{ color: "#a4262c", fontWeight: 600 }}>{columnEditorError}</div>
+                  )}
+
+                  <Stack
+                    tokens={{ childrenGap: 6 }}
+                    styles={{
+                      root: {
+                        maxHeight: "52vh",
+                        overflow: "auto",
+                        paddingRight: 4,
+                      },
+                    }}
+                  >
+                    {columnEditorEntries.map((entry, index) => (
+                      <Stack
+                        key={entry.internalName}
+                        horizontal
+                        verticalAlign="center"
+                        tokens={{ childrenGap: 8 }}
+                        draggable
+                        onDragStart={() => handleColumnDragStart(index)}
+                        onDragOver={(ev) => handleColumnDragOver(ev, index)}
+                        onDrop={(ev) => handleColumnDrop(ev, index)}
+                        onDragEnd={handleColumnDragEnd}
+                        styles={{
+                          root: {
+                            padding: "8px 10px",
+                            border: "1px solid #e5e5e5",
+                            borderRadius: 8,
+                            background:
+                              dragOverIndex === index
+                                ? "#eaf4ff"
+                                : entry.visible
+                                ? "#fff"
+                                : "#fafafa",
+                            cursor: "grab",
+                          },
+                        }}
+                      >
+                        <div
+                          title="Arrastrar para reordenar"
+                          style={{
+                            width: 24,
+                            textAlign: "center",
+                            color: "#605e5c",
+                            userSelect: "none",
+                            fontSize: 18,
+                            lineHeight: "18px",
+                            cursor: "grab",
+                          }}
+                          draggable
+                          onDragStart={() => handleColumnDragStart(index)}
+                          onDragEnd={handleColumnDragEnd}
+                        >
+                          ⋮⋮
+                        </div>
+                        <Checkbox
+                          checked={entry.visible}
+                          onChange={() => toggleColumnVisibility(entry.internalName)}
+                        />
+                        <Checkbox
+                          label="Editable en grilla"
+                          checked={entry.editable !== false}
+                          onChange={() => toggleColumnEditable(entry.internalName)}
+                        />
+                        <Stack grow>
+                          <div style={{ fontWeight: 600 }}>{entry.title}</div>
+                          <div style={{ fontSize: 12, color: "#605e5c" }}>
+                            {entry.internalName}
+                            {entry.type ? ` • ${entry.type}` : ""}
+                          </div>
+                        </Stack>
+                        <IconButton
+                          iconProps={{ iconName: "ChevronUp" }}
+                          title="Subir"
+                          onClick={() => moveColumn(entry.internalName, -1)}
+                          disabled={index === 0}
+                        />
+                        <IconButton
+                          iconProps={{ iconName: "ChevronDown" }}
+                          title="Bajar"
+                          onClick={() => moveColumn(entry.internalName, 1)}
+                          disabled={index === columnEditorEntries.length - 1}
+                        />
+                      </Stack>
+                    ))}
+                  </Stack>
+
+                  <Stack horizontal tokens={{ childrenGap: 8 }} styles={{ root: { marginTop: 8 } }}>
+                    <PrimaryButton
+                      text="Guardar"
+                      onClick={() => saveColumnEditor().catch(() => {})}
+                      disabled={columnEditorLoading || !columnEditorEntries.length}
+                    />
+                    <DefaultButton
+                      text="Cancelar"
+                      onClick={() => {
+                        if (columnEditorLoading) return;
+                        setColumnEditorOpen(false);
+                        setColumnEditorError("");
+                      }}
+                      disabled={columnEditorLoading}
+                    />
+                  </Stack>
+                </Stack>
+              )}
+            </div>
+          </Modal>
+
+          {/* ===== Modal ediciÃ³n bloqueada ===== */}
+          <Modal
+            isOpen={lockedQuickEditModalOpen}
+            onDismiss={() => setLockedQuickEditModalOpen(false)}
+            isBlocking={false}
+            allowTouchBodyScroll
+            styles={{
+              main: {
+                width: isMobile ? "94vw" : "520px",
+                maxWidth: "94vw",
+                borderRadius: 12,
+                overflow: "hidden",
+              },
+            }}
+          >
+            <div className={modalHeader}>
+              <span style={{ fontWeight: 600 }}>Campo no editable</span>
+              <IconButton
+                iconProps={{ iconName: "Cancel" }}
+                styles={{ root: { color: "#fff" } }}
+                onClick={() => setLockedQuickEditModalOpen(false)}
+                ariaLabel="Cerrar"
+              />
+            </div>
+            <div className={modalBody}>
+              <Stack tokens={{ childrenGap: 12 }}>
+                <div style={{ color: "#323130", lineHeight: 1.5 }}>
+                  <strong>{lockedQuickEditModalTitle || lockedQuickEditModalField}</strong> no se
+                  puede editar desde la grilla. Este valor debe modificarse desde el formulario de
+                  edición.
+                </div>
+                <DefaultButton text="Entendido" onClick={() => setLockedQuickEditModalOpen(false)} />
               </Stack>
             </div>
           </Modal>

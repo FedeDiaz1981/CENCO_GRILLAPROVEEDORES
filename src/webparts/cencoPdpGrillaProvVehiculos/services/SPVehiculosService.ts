@@ -426,7 +426,7 @@ export class SPVehiculosService implements IVehiculosService {
     const view = this.l().views.getById(viewId);
     const v = (await view.select("ViewQuery", "RowLimit")()) as ViewInfoLite;
 
-    const fieldNames = (await this.getViewFieldNames(viewId)).map(normalizeViewName);
+    const fieldNames = (await this.getViewFieldNames(viewId, true)).map(normalizeViewName);
 
     const requested = Array.from(new Set<string>(["Title", ...fieldNames]));
     if (boolField && requested.indexOf(boolField) === -1) requested.push(boolField);
@@ -485,7 +485,7 @@ export class SPVehiculosService implements IVehiculosService {
     if (!this.listId) throw new Error("No se configuró la lista.");
     const t0 = perfNow();
 
-    const names = (await this.getViewFieldNames(viewId)).map(normalizeViewName);
+    const names = (await this.getViewFieldNames(viewId, true)).map(normalizeViewName);
     const metas = await this.getFieldsMeta(names);
     this.trace("getViewGrid.schema", t0, { viewId, fields: names.length, metas: metas.length });
 
@@ -510,6 +510,138 @@ export class SPVehiculosService implements IVehiculosService {
       lookupFields: Object.keys(hydrated.lookupOpts).length,
     });
     return { columns, items: hydrated.items, listId: this.listId };
+  }
+
+  public async getAllViewGrid(
+    viewId: string,
+    boolField?: string,
+    options?: ViewGridOptions
+  ): Promise<{ columns: GridColumn[]; items: GridRow[]; listId: string }> {
+    if (!this.listId) throw new Error("No se configuró la lista.");
+    if (!viewId) throw new Error("viewId requerido");
+
+    const pageSize = 200;
+    const allItems: GridRow[] = [];
+    let columns: GridColumn[] = [];
+    let pagingToken: string | undefined = undefined;
+    let safety = 0;
+
+    while (safety < 500) {
+      safety += 1;
+
+      const page = await this.getViewGridPaged(
+        viewId,
+        pageSize,
+        pagingToken,
+        boolField,
+        undefined,
+        undefined,
+        options
+      );
+
+      if (!columns.length) columns = page.columns;
+      if (Array.isArray(page.items) && page.items.length) {
+        allItems.push(...page.items);
+      }
+
+      if (!page.nextToken) break;
+      pagingToken = page.nextToken;
+    }
+
+    return { columns, items: allItems, listId: this.listId };
+  }
+
+  public async getListGridPaged(
+    listId: string,
+    pageSize: number,
+    pagingToken?: string,
+    options?: ViewGridOptions
+  ): Promise<{
+    columns: GridColumn[];
+    items: GridRow[];
+    listId: string;
+    nextToken?: string;
+  }> {
+    if (!listId) throw new Error("listId requerido");
+    const t0 = perfNow();
+
+    const onceKey = ["getListGridPaged:v1", listId, String(pageSize || 0), pagingToken || ""].join("|");
+
+    return this.once(onceKey, async () => {
+      const list = this.sp.web.lists.getById(listId);
+
+      const fieldRefs = await this.getListFields(listId);
+      const requested = Array.from(
+        new Set<string>(["ID", ...fieldRefs.map((f) => normalizeViewName(f.internalName))])
+      );
+
+      const detailedMetas = await this.getFieldsMetaFromList(listId, requested.filter((n) => n !== "ID"));
+      const detailedMap = new Map<string, EditField>(
+        detailedMetas.map((m) => [m.internalName.toLowerCase(), m])
+      );
+
+      const metas = requested
+        .filter((n) => n !== "ID")
+        .map((name) => {
+          const raw = fieldRefs.find((f) => f.internalName.toLowerCase() === name.toLowerCase());
+          const hit = detailedMap.get(name.toLowerCase());
+          return (
+            hit || {
+              internalName: raw?.internalName ?? name,
+              title: raw?.title ?? name,
+              type: raw?.type ?? "Text",
+              required: false,
+              readOnly: false,
+              allowMultiple: false,
+            }
+          ) as EditField;
+        });
+
+      const columns: GridColumn[] = metas.map((m) => ({
+        key: m.internalName,
+        name: m.title,
+        fieldName: m.internalName,
+        minWidth: 120,
+        isResizable: true,
+      }));
+
+      const validNames = ["ID", ...metas.map((m) => m.internalName)];
+      const viewFields = validNames
+        .map((n) => `<FieldRef Name='${this.escapeXmlAttr(n)}'/>`)
+        .join("");
+
+      const rowLimit = Math.max(1, Number(pageSize) || 30);
+      const viewXml = `
+        <View>
+          <ViewFields>${viewFields}</ViewFields>
+          <RowLimit Paged="TRUE">${rowLimit}</RowLimit>
+        </View>
+      `.trim();
+
+      const parameters: Record<string, unknown> = {
+        ViewXml: viewXml,
+        RenderOptions: 2,
+        AddRequiredFields: true,
+      };
+      if (pagingToken) parameters.Paging = pagingToken;
+
+      const data = await this.renderListDataAsStreamSafe(list, parameters);
+      const rows: GridRow[] = Array.isArray(data?.Row) ? data.Row : [];
+
+      const items =
+        options?.resolveLookups === false ? rows : (await this.hydrateLookupTexts(rows, metas)).items;
+
+      const nextHref = data?.NextHref || undefined;
+      const nextToken = nextHref ? nextHref : undefined;
+
+      this.trace("getListGridPaged", t0, {
+        listId,
+        rows: items.length,
+        lookupFields: options?.resolveLookups === false ? 0 : metas.filter((m) => m.type === "Lookup" || m.type === "User").length,
+      });
+
+      return { columns, items, listId, nextToken };
+    });
   }
 
   /**
@@ -577,7 +709,7 @@ export class SPVehiculosService implements IVehiculosService {
       const view = this.l().views.getById(viewId);
       const v = (await view.select("ViewQuery")()) as ViewInfoLite;
 
-      const fieldNames = (await this.getViewFieldNames(viewId)).map(normalizeViewName);
+      const fieldNames = (await this.getViewFieldNames(viewId, true)).map(normalizeViewName);
       this.trace("getViewGridPaged.schemaNames", t0, { viewId, fields: fieldNames.length });
 
       const names = Array.from(new Set<string>(["ID", "Title", ...fieldNames]));
@@ -680,7 +812,7 @@ export class SPVehiculosService implements IVehiculosService {
       const view = this.l().views.getById(viewId);
       const v = (await view.select("ViewQuery", "RowLimit")()) as ViewInfoLite;
 
-      const fieldNames = (await this.getViewFieldNames(viewId)).map(normalizeViewName);
+      const fieldNames = (await this.getViewFieldNames(viewId, true)).map(normalizeViewName);
 
       const requested = Array.from(new Set<string>(["Title", ...fieldNames]));
       if (boolField && requested.indexOf(boolField) === -1) requested.push(boolField);
@@ -809,10 +941,10 @@ export class SPVehiculosService implements IVehiculosService {
   // ============================================================
   // Metadatos (lista base)
   // ============================================================
-  public async getViewFieldNames(viewId: string): Promise<string[]> {
+  public async getViewFieldNames(viewId: string, includeSystemFields = false): Promise<string[]> {
     if (!this.listId) throw new Error("No se configuró la lista.");
 
-    const key = `viewFieldNames:${this.listId}:${viewId}`;
+    const key = `viewFieldNames:${this.listId}:${viewId}:${includeSystemFields ? "1" : "0"}`;
     return SHARED_CACHE.get(this.sharedCacheKey(key), async () => {
       const view = this.l().views.getById(viewId);
 
@@ -820,7 +952,9 @@ export class SPVehiculosService implements IVehiculosService {
         const raw = (await (view as unknown as { fields: () => Promise<unknown> }).fields()) as unknown;
         const arr = extractStringArray(raw);
         if (arr.length) {
-          return arr.map(normalizeViewName).filter((n) => !this.isSysOrSkippableField(n));
+          return arr
+            .map(normalizeViewName)
+            .filter((n) => includeSystemFields || !this.isSysOrSkippableField(n));
         }
       } catch {
         // fallback a HtmlSchemaXml
@@ -833,7 +967,9 @@ export class SPVehiculosService implements IVehiculosService {
         .map((m) => /FieldRef\s+Name="([^"]+)"/.exec(m)?.[1])
         .filter((s): s is string => Boolean(s));
 
-      return parsed.map(normalizeViewName).filter((n) => !this.isSysOrSkippableField(n));
+      return parsed
+        .map(normalizeViewName)
+        .filter((n) => includeSystemFields || !this.isSysOrSkippableField(n));
     });
   }
 
@@ -1194,8 +1330,18 @@ export class SPVehiculosService implements IVehiculosService {
           if (Array.isArray(val)) {
             ids = (val as unknown[]).map((x) => {
               if (typeof x === "number") return x;
+              if (typeof x === "string") {
+                const parsed = Number(x.trim());
+                return Number.isNaN(parsed) ? NaN : parsed;
+              }
               if (x && typeof x === "object" && "key" in (x as Record<string, unknown>)) {
-                return Number((x as Record<string, unknown>).key);
+                const k = (x as Record<string, unknown>).key;
+                if (typeof k === "number") return k;
+                if (typeof k === "string") {
+                  const parsed = Number(k.trim());
+                  return Number.isNaN(parsed) ? NaN : parsed;
+                }
+                return Number(k);
               }
               return NaN;
             });
@@ -1205,9 +1351,19 @@ export class SPVehiculosService implements IVehiculosService {
         } else {
           let idVal: number | undefined;
           if (typeof val === "number") idVal = val;
+          else if (typeof val === "string") {
+            const parsed = Number(val.trim());
+            idVal = Number.isNaN(parsed) ? undefined : parsed;
+          }
           else if (val && typeof val === "object" && "key" in (val as Record<string, unknown>)) {
             const k = (val as Record<string, unknown>).key;
-            idVal = typeof k === "number" ? k : k !== undefined ? Number(k) : undefined;
+            if (typeof k === "number") idVal = k;
+            else if (typeof k === "string") {
+              const parsed = Number(k.trim());
+              idVal = Number.isNaN(parsed) ? undefined : parsed;
+            } else {
+              idVal = k !== undefined ? Number(k) : undefined;
+            }
             if (idVal !== undefined && Number.isNaN(idVal)) idVal = undefined;
           }
           bodyObj[`${n}Id`] = idVal;
@@ -1481,10 +1637,10 @@ export class SPVehiculosService implements IVehiculosService {
 
         // probamos varias formas comunes en respuestas SP
         const candidates = [
-          r[`${m.internalName}Id`],
-          r[`${m.internalName}_Id`],
-          r[m.internalName], // a veces viene "12;#ACME..."
-          r[`${m.internalName}.Id`],
+          this.getValueByNameInsensitive(r, `${m.internalName}Id`),
+          this.getValueByNameInsensitive(r, `${m.internalName}_Id`),
+          this.getValueByNameInsensitive(r, m.internalName), // a veces viene "12;#ACME..."
+          this.getValueByNameInsensitive(r, `${m.internalName}.Id`),
         ];
 
         let ids: number[] = [];
@@ -1560,5 +1716,19 @@ export class SPVehiculosService implements IVehiculosService {
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&apos;");
+  }
+
+  private getValueByNameInsensitive(row: GridRow, name: string): unknown {
+    const target = String(name || "").trim();
+    if (!target) return undefined;
+
+    if (Object.prototype.hasOwnProperty.call(row, target)) return row[target];
+
+    const targetLower = target.toLowerCase();
+    for (const key of Object.keys(row)) {
+      if (String(key).toLowerCase() === targetLower) return row[key];
+    }
+
+    return undefined;
   }
 }

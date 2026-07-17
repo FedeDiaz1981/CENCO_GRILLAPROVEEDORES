@@ -59,7 +59,11 @@ export function getRowId<T extends Record<string, unknown>>(row: T | undefined):
   const candidates = ["id", "Id", "ID", "ItemId", "ID_x0020_", "Id_x0020_"];
   for (const key of candidates) {
     const value = row[key];
-    if (typeof value === "number") return value;
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+      const parsed = Number(value.trim());
+      if (!Number.isNaN(parsed) && Number.isFinite(parsed)) return parsed;
+    }
   }
 
   return undefined;

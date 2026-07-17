@@ -9,6 +9,8 @@ import {
   PropertyPaneCheckbox,
   PropertyPaneTextField,
   PropertyPaneSlider,
+  PropertyPaneButton,
+  PropertyPaneButtonType,
 } from "@microsoft/sp-property-pane";
 import { BaseClientSideWebPart } from "@microsoft/sp-webpart-base";
 import { SPFI } from "@pnp/sp";
@@ -17,6 +19,8 @@ import { SPFx } from "@pnp/sp/behaviors/spfx";
 
 import VehiculosGrid from "./components/VehiculosGrid";
 import { SPVehiculosService } from "./services/SPVehiculosService";
+import type { EditField } from "./services/IVehiculosService";
+import { buildViewSnapshot, stringifyViewSnapshot } from "./utils/viewSnapshot";
 
 export type ApprovalMode = "traditional" | "automate" | "both";
 export type MotivoMode = "none" | "approve" | "reject" | "both";
@@ -80,13 +84,18 @@ export interface ICencoPdpGrillaProvVehiculosWebPartProps {
   gridTitleColor?: string; // hex o css color
   gridTitleFontWeight?: string; // "400" | "600" | ...
   gridTitleFontFamily?: string; // "Segoe UI" | ...
+
+  viewSnapshotJson?: string;
+  viewSnapshotCapturedAt?: string;
+  viewColumnConfigJson?: string;
+  columnEditorOpenNonce?: number;
 }
 
 const createNotConfiguredElement = (): React.ReactElement =>
   React.createElement(
     "div",
     { style: { padding: 12 } },
-    "Configura la lista (y opcionalmente la vista y el campo booleano) desde el panel de propiedades."
+    "Configura la lista y el campo booleano desde el panel de propiedades."
   );
 
 export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWebPart<ICencoPdpGrillaProvVehiculosWebPartProps> {
@@ -96,7 +105,6 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
     .slice(2, 10)}`;
 
   private _listOptions: IPropertyPaneDropdownOption[] = [];
-  private _viewOptions: IPropertyPaneDropdownOption[] = [];
   private _boolFieldOptions: IPropertyPaneDropdownOption[] = [];
 
   private _childListOptions: IPropertyPaneDropdownOption[] = [];
@@ -104,7 +112,6 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
   private _childViewOptions: IPropertyPaneDropdownOption[] = [];
 
   private _listsLoaded = false;
-  private _viewsLoadedFor?: string;
   private _boolsLoadedFor?: string;
 
   private _childViewsLoadedFor?: string;
@@ -225,6 +232,10 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
     this.properties.gridTitleColor ??= "#323130";
     this.properties.gridTitleFontWeight ??= "700";
     this.properties.gridTitleFontFamily ??= "Segoe UI";
+    this.properties.viewSnapshotJson ??= "";
+    this.properties.viewSnapshotCapturedAt ??= "";
+    this.properties.viewColumnConfigJson ??= "";
+    this.properties.columnEditorOpenNonce ??= 0;
 
     // Pre-carga básica (ayuda a que el panel ya arranque con opciones cuando hay props guardadas)
     try {
@@ -314,7 +325,7 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
       ? createNotConfiguredElement()
       : React.createElement(VehiculosGrid, {
           service: new SPVehiculosService(this._sp, listIdNorm),
-          groupNameForEdit: "Distribucion",
+          groupNameForEdit: String(approveGroupName ?? "Distribucion").trim() || "Distribucion",
           viewId: viewIdNorm,
           toggleField,
           showAdd,
@@ -349,6 +360,11 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
           gridTitleColor,
           gridTitleFontWeight,
           gridTitleFontFamily,
+          viewSnapshotJson: this.properties.viewSnapshotJson,
+          viewColumnConfigJson: this.properties.viewColumnConfigJson,
+          columnEditorOpenNonce: this.properties.columnEditorOpenNonce,
+          onCaptureViewSnapshot: this._captureViewSnapshot.bind(this),
+          onSaveViewColumnConfig: this._saveViewColumnConfig.bind(this),
 
           // ✅ Aprobación (legacy + nuevo)
           enableApproval: enableApproveModal,
@@ -384,6 +400,134 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
     ReactDom.unmountComponentAtNode(this.domElement);
   }
 
+  private async _captureViewSnapshot(): Promise<void> {
+    const listId = this._normGuid(this.properties.listId);
+    const viewId = this._normGuid(this.properties.viewId);
+    if (!listId || !viewId) return;
+
+    const toggleField = String(this.properties.toggleField || "").trim() || undefined;
+
+    const extractViewFieldsExact = (htmlSchemaXml?: string): string[] => {
+      const xml = String(htmlSchemaXml || "");
+      const matches = xml.match(/FieldRef\s+Name="([^"]+)"/g) || [];
+      const names = matches
+        .map((m) => /FieldRef\s+Name="([^"]+)"/.exec(m)?.[1])
+        .filter((s): s is string => Boolean(s));
+      return names;
+    };
+
+    try {
+      const list = this._sp.web.lists.getById(listId);
+      const service = new SPVehiculosService(this._sp, listId);
+      const viewInfo = (await list.views
+        .getById(viewId)
+        .select("Title", "ViewQuery", "RowLimit", "HtmlSchemaXml")()) as {
+        Title?: string;
+        ViewQuery?: string;
+        RowLimit?: number;
+        HtmlSchemaXml?: string;
+      };
+
+      const fieldNames = extractViewFieldsExact(viewInfo.HtmlSchemaXml);
+      const fieldMetas = await Promise.all(
+        fieldNames.map(async (name, order) => {
+          try {
+            const meta = (await list.fields
+              .getByInternalNameOrTitle(name)
+              .select(
+                "InternalName",
+                "Title",
+                "TypeAsString",
+                "Required",
+                "ReadOnlyField",
+                "LookupList",
+                "AllowMultipleValues",
+                "Choices"
+              )()) as {
+              InternalName: string;
+              Title: string;
+              TypeAsString: string;
+              Required: boolean;
+              ReadOnlyField: boolean;
+              LookupList?: string;
+              AllowMultipleValues?: boolean;
+              Choices?: string[];
+            };
+
+            return {
+              internalName: meta.InternalName,
+              title: meta.Title,
+              type: meta.TypeAsString,
+              required: Boolean(meta.Required),
+              readOnly: Boolean(meta.ReadOnlyField),
+              allowMultiple: Boolean(meta.AllowMultipleValues),
+              lookupListId: meta.LookupList,
+              choices: meta.Choices,
+              order,
+              inView: true,
+            } as EditField & { order: number; inView: boolean };
+          } catch {
+            return {
+              internalName: name,
+              title: name,
+              type: "Text",
+              required: false,
+              readOnly: true,
+              order,
+              inView: true,
+            } as EditField & { order: number; inView: boolean };
+          }
+        })
+      );
+
+      const rowLimit = typeof viewInfo.RowLimit === "number" && viewInfo.RowLimit > 0 ? viewInfo.RowLimit : 200;
+      const grid = await service.getAllViewGrid(viewId, toggleField, { resolveLookups: true });
+      const items = grid.items as Array<Record<string, unknown>>;
+      const columns = grid.columns.map((column) => ({
+        key: column.key,
+        name: column.name,
+        fieldName: column.fieldName,
+      }));
+
+      const snapshot = buildViewSnapshot({
+        listId,
+        viewId,
+        toggleField,
+        view: {
+          title: viewInfo.Title,
+          rowLimit,
+          viewQuery: viewInfo.ViewQuery,
+          htmlSchemaXml: viewInfo.HtmlSchemaXml,
+          fieldNames,
+        },
+        columns,
+        fields: fieldMetas,
+        items,
+        capturedAt: new Date().toISOString(),
+      });
+
+      this.properties.viewSnapshotJson = stringifyViewSnapshot(snapshot);
+      this.properties.viewSnapshotCapturedAt = snapshot.capturedAt;
+      this.context.propertyPane.refresh();
+      this.render();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error("No se pudo capturar el snapshot de la vista", error);
+    }
+  }
+
+  private async _saveViewColumnConfig(json: string): Promise<void> {
+    this.properties.viewColumnConfigJson = json;
+    this.context.propertyPane.refresh();
+    this.render();
+  }
+
+  private _requestColumnEditor(): void {
+    this.properties.columnEditorOpenNonce = (this.properties.columnEditorOpenNonce ?? 0) + 1;
+    this.context.propertyPane.refresh();
+    this.render();
+  }
+
   protected onPropertyPaneConfigurationStart(): void {
     if (!this._listsLoaded) {
       this._loadLists()
@@ -405,9 +549,7 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
         .then(() => this.context.propertyPane.refresh())
         .catch(() => undefined);
     } else {
-      this._viewOptions = [];
       this._boolFieldOptions = [];
-      this._viewsLoadedFor = undefined;
       this._boolsLoadedFor = undefined;
     }
 
@@ -445,10 +587,11 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
     if (prop === "listId" && newVal !== oldVal) {
       this.properties.viewId = undefined;
       this.properties.toggleField = undefined;
+      this.properties.viewSnapshotJson = "";
+      this.properties.viewSnapshotCapturedAt = "";
+      this.properties.viewColumnConfigJson = "";
 
-      this._viewOptions = [];
       this._boolFieldOptions = [];
-      this._viewsLoadedFor = undefined;
       this._boolsLoadedFor = undefined;
 
       if (newVal) {
@@ -544,6 +687,7 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
       "gridTitleColor",
       "gridTitleFontWeight",
       "gridTitleFontFamily",
+      "viewColumnConfigJson",
     ];
 
     if (trackedProps.indexOf(prop) !== -1 && newVal !== oldVal) {
@@ -571,8 +715,6 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
   private async _loadViews(listId: string): Promise<void> {
     const id = this._normGuid(listId);
     if (!id) {
-      this._viewOptions = [];
-      this._viewsLoadedFor = undefined;
       return;
     }
 
@@ -585,11 +727,15 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
       PersonalView: boolean;
     }>;
 
-    this._viewOptions = rows
-      .filter((v) => !v.Hidden && !v.PersonalView)
-      .map((v) => ({ key: this._normGuid(v.Id) as string, text: v.Title }));
-
-    this._viewsLoadedFor = id;
+    const activeViews = rows.filter((v) => !v.Hidden && !v.PersonalView);
+    const currentViewId = this._normGuid(this.properties.viewId);
+    const defaultView =
+      activeViews.find((v) => Boolean((v as { DefaultView?: boolean }).DefaultView)) ??
+      activeViews[0];
+    const defaultViewId = this._normGuid(defaultView?.Id);
+    if (defaultViewId && currentViewId !== defaultViewId) {
+      this.properties.viewId = defaultViewId;
+    }
   }
 
   private async _loadBooleanFields(listId: string): Promise<void> {
@@ -750,17 +896,19 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
                   selectedKey: listIdNorm,
                   disabled: !this._listsLoaded,
                 }),
-                PropertyPaneDropdown("viewId", {
-                  label: "Vista (opcional)",
-                  options: this._viewOptions,
-                  selectedKey: this._normGuid(this.properties.viewId),
-                  disabled: !listIdNorm || this._viewsLoadedFor !== listIdNorm,
-                }),
                 PropertyPaneDropdown("toggleField", {
                   label: "Campo booleano (Activar/Desactivar)",
                   options: this._boolFieldOptions,
                   selectedKey: this.properties.toggleField,
                   disabled: !listIdNorm || this._boolsLoadedFor !== listIdNorm,
+                }),
+                PropertyPaneButton("openColumnEditor", {
+                  text: "Configurar campos de la lista",
+                  buttonType: PropertyPaneButtonType.Primary,
+                  onClick: () => {
+                    this._requestColumnEditor();
+                  },
+                  disabled: !listIdNorm,
                 }),
               ],
             },

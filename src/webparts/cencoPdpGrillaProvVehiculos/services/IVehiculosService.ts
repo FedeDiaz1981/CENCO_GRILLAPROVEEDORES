@@ -81,6 +81,32 @@ export interface IVehiculosService {
     options?: ViewGridOptions
   ): Promise<{ columns: GridColumn[]; items: GridRow[]; listId?: string }>;
 
+  /**
+   * Obtiene todos los registros visibles de una vista usando el mismo motor paginado
+   * que la grilla. Se usa para snapshots fieles de vistas complejas.
+   */
+  getAllViewGrid(
+    viewId: string,
+    boolField?: string,
+    options?: ViewGridOptions
+  ): Promise<{ columns: GridColumn[]; items: GridRow[]; listId: string }>;
+
+  /**
+   * Paginado server-side sobre toda la lista, sin depender de una vista.
+   * Se usa para vistas 100% personalizadas definidas por la webpart.
+   */
+  getListGridPaged?(
+    listId: string,
+    pageSize: number,
+    pagingToken?: string,
+    options?: ViewGridOptions
+  ): Promise<{
+    columns: GridColumn[];
+    items: GridRow[];
+    listId: string;
+    nextToken?: string;
+  }>;
+
   add(draft: VehiculoDraft): Promise<void>;
   update(id: number, draft: VehiculoDraft): Promise<void>;
   recycle(id: number): Promise<void>;
@@ -106,7 +132,7 @@ export interface IVehiculosService {
   // Metadatos (lista base)
   // ============================================================
   /** Nombres internos de campos definidos en una vista de la lista base */
-  getViewFieldNames(viewId: string): Promise<string[]>;
+  getViewFieldNames(viewId: string, includeSystemFields?: boolean): Promise<string[]>;
 
   /** Metadatos de campos por internalName (lista base) */
   getFieldsMeta(internalNames: string[]): Promise<EditField[]>;
