@@ -21,6 +21,14 @@ import VehiculosGrid from "./components/VehiculosGrid";
 import { SPVehiculosService } from "./services/SPVehiculosService";
 import type { EditField } from "./services/IVehiculosService";
 import { buildViewSnapshot, stringifyViewSnapshot } from "./utils/viewSnapshot";
+import {
+  buildViewFilterSnapshot,
+  stringifyViewFilterSnapshot,
+} from "./utils/viewFilterSnapshot";
+import {
+  buildSemaforoSnapshot,
+  stringifySemaforoSnapshot,
+} from "./utils/semaforoSnapshot";
 
 export type ApprovalMode = "traditional" | "automate" | "both";
 export type MotivoMode = "none" | "approve" | "reject" | "both";
@@ -87,6 +95,10 @@ export interface ICencoPdpGrillaProvVehiculosWebPartProps {
 
   viewSnapshotJson?: string;
   viewSnapshotCapturedAt?: string;
+  viewFilterSnapshotJson?: string;
+  viewFilterSnapshotCapturedAt?: string;
+  semaforoSnapshotJson?: string;
+  semaforoSnapshotCapturedAt?: string;
   viewColumnConfigJson?: string;
   columnEditorOpenNonce?: number;
 }
@@ -106,6 +118,7 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
 
   private _listOptions: IPropertyPaneDropdownOption[] = [];
   private _boolFieldOptions: IPropertyPaneDropdownOption[] = [];
+  private _viewOptions: IPropertyPaneDropdownOption[] = [];
 
   private _childListOptions: IPropertyPaneDropdownOption[] = [];
   private _childFieldOptionsChild: IPropertyPaneDropdownOption[] = [];
@@ -113,6 +126,7 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
 
   private _listsLoaded = false;
   private _boolsLoadedFor?: string;
+  private _viewsLoadedFor?: string;
 
   private _childViewsLoadedFor?: string;
   private _childFieldsLoadedFor?: string;
@@ -234,6 +248,10 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
     this.properties.gridTitleFontFamily ??= "Segoe UI";
     this.properties.viewSnapshotJson ??= "";
     this.properties.viewSnapshotCapturedAt ??= "";
+    this.properties.viewFilterSnapshotJson ??= "";
+    this.properties.viewFilterSnapshotCapturedAt ??= "";
+    this.properties.semaforoSnapshotJson ??= "";
+    this.properties.semaforoSnapshotCapturedAt ??= "";
     this.properties.viewColumnConfigJson ??= "";
     this.properties.columnEditorOpenNonce ??= 0;
 
@@ -361,9 +379,13 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
           gridTitleFontWeight,
           gridTitleFontFamily,
           viewSnapshotJson: this.properties.viewSnapshotJson,
+          viewFilterSnapshotJson: this.properties.viewFilterSnapshotJson,
+          semaforoSnapshotJson: this.properties.semaforoSnapshotJson,
           viewColumnConfigJson: this.properties.viewColumnConfigJson,
           columnEditorOpenNonce: this.properties.columnEditorOpenNonce,
           onCaptureViewSnapshot: this._captureViewSnapshot.bind(this),
+          onCaptureViewFilterSnapshot: this._captureViewFilterSnapshot.bind(this),
+          onCaptureSemaforoSnapshot: this._captureSemaforoSnapshot.bind(this),
           onSaveViewColumnConfig: this._saveViewColumnConfig.bind(this),
 
           // ✅ Aprobación (legacy + nuevo)
@@ -516,6 +538,100 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
     }
   }
 
+  private async _captureViewFilterSnapshot(): Promise<void> {
+    const listId = this._normGuid(this.properties.listId);
+    const viewId = this._normGuid(this.properties.viewId);
+    if (!listId || !viewId) return;
+
+    try {
+      const list = this._sp.web.lists.getById(listId);
+      const viewInfo = (await list.views
+        .getById(viewId)
+        .select("Title", "ViewQuery", "RowLimit")()) as {
+        Title?: string;
+        ViewQuery?: string;
+        RowLimit?: number;
+      };
+
+      const snapshot = buildViewFilterSnapshot({
+        listId,
+        viewId,
+        view: {
+          title: viewInfo.Title,
+          rowLimit: typeof viewInfo.RowLimit === "number" ? viewInfo.RowLimit : undefined,
+          viewQuery: viewInfo.ViewQuery,
+        },
+        capturedAt: new Date().toISOString(),
+      });
+
+      this.properties.viewFilterSnapshotJson = stringifyViewFilterSnapshot(snapshot);
+      this.properties.viewFilterSnapshotCapturedAt = snapshot.capturedAt;
+      this.context.propertyPane.refresh();
+      this.render();
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error("No se pudo capturar el snapshot de filtros de la vista", error);
+    }
+  }
+
+  private async _captureSemaforoSnapshot(): Promise<void> {
+    if (!this.properties.enableSemaforo) return;
+
+    const listTitle = String(this.properties.tipoConfigListTitle || "").trim();
+    const keyField = String(this.properties.tipoConfigKeyField || "").trim();
+    if (!listTitle || !keyField) return;
+
+    try {
+      // eslint-disable-next-line no-console
+      console.log("[CencoPdpGrillaProvVehiculos] Capturando snapshot de semáforo", {
+        listTitle,
+        keyField,
+      });
+
+      const rows = await this._sp.web.lists
+        .getByTitle(listTitle)
+        .items.select("Id", "Title", "campo", "amarillo", keyField)
+        .top(5000)();
+
+      const map = new Map<string, { dateField: string; warnDays: number }>();
+      for (const it of rows as Array<Record<string, unknown>>) {
+        const keyRaw = it[keyField] ?? it.Title;
+        const key = String(keyRaw ?? "").trim().toLowerCase();
+        const dateField = String(it.campo ?? "").trim();
+        const warnDays = Number(it.amarillo) || 0;
+        if (key && dateField) map.set(key, { dateField, warnDays });
+      }
+
+      const rulesMap: Record<string, { dateField: string; warnDays: number }> = {};
+      map.forEach((value, key) => {
+        rulesMap[key] = value;
+      });
+
+      const snapshot = buildSemaforoSnapshot({
+        listTitle,
+        keyField,
+        rules: rulesMap,
+        capturedAt: new Date().toISOString(),
+      });
+
+      this.properties.semaforoSnapshotJson = stringifySemaforoSnapshot(snapshot);
+      this.properties.semaforoSnapshotCapturedAt = snapshot.capturedAt;
+      this.context.propertyPane.refresh();
+      this.render();
+
+      // eslint-disable-next-line no-console
+      console.log("[CencoPdpGrillaProvVehiculos] Snapshot de semáforo guardado", {
+        listTitle,
+        keyField,
+        rulesCount: Object.keys(rulesMap).length,
+        capturedAt: snapshot.capturedAt,
+      });
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error("No se pudo capturar el snapshot del semáforo", error);
+    }
+  }
+
   private async _saveViewColumnConfig(json: string): Promise<void> {
     this.properties.viewColumnConfigJson = json;
     this.context.propertyPane.refresh();
@@ -551,6 +667,8 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
     } else {
       this._boolFieldOptions = [];
       this._boolsLoadedFor = undefined;
+      this._viewsLoadedFor = undefined;
+      this._viewOptions = [];
     }
 
     const childListId = this._normGuid(this.properties.relatedListId);
@@ -589,10 +707,16 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
       this.properties.toggleField = undefined;
       this.properties.viewSnapshotJson = "";
       this.properties.viewSnapshotCapturedAt = "";
+      this.properties.viewFilterSnapshotJson = "";
+      this.properties.viewFilterSnapshotCapturedAt = "";
       this.properties.viewColumnConfigJson = "";
+      this.properties.semaforoSnapshotJson = "";
+      this.properties.semaforoSnapshotCapturedAt = "";
 
       this._boolFieldOptions = [];
       this._boolsLoadedFor = undefined;
+      this._viewsLoadedFor = undefined;
+      this._viewOptions = [];
 
       if (newVal) {
         const id = String(newVal);
@@ -607,6 +731,11 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
 
       this.context.propertyPane.refresh();
       this.render();
+    }
+
+    if (prop === "viewId" && newVal !== oldVal) {
+      this.properties.viewFilterSnapshotJson = "";
+      this.properties.viewFilterSnapshotCapturedAt = "";
     }
 
     if (prop === "relatedListId" && newVal !== oldVal) {
@@ -687,6 +816,8 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
       "gridTitleColor",
       "gridTitleFontWeight",
       "gridTitleFontFamily",
+      "semaforoSnapshotJson",
+      "viewFilterSnapshotJson",
       "viewColumnConfigJson",
     ];
 
@@ -715,6 +846,8 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
   private async _loadViews(listId: string): Promise<void> {
     const id = this._normGuid(listId);
     if (!id) {
+      this._viewOptions = [];
+      this._viewsLoadedFor = undefined;
       return;
     }
 
@@ -728,14 +861,23 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
     }>;
 
     const activeViews = rows.filter((v) => !v.Hidden && !v.PersonalView);
+    this._viewOptions = activeViews.map((v) => ({
+      key: this._normGuid(v.Id) as string,
+      text: v.Title,
+    }));
     const currentViewId = this._normGuid(this.properties.viewId);
     const defaultView =
       activeViews.find((v) => Boolean((v as { DefaultView?: boolean }).DefaultView)) ??
       activeViews[0];
     const defaultViewId = this._normGuid(defaultView?.Id);
-    if (defaultViewId && currentViewId !== defaultViewId) {
+    const currentViewIsValid =
+      Boolean(currentViewId) &&
+      activeViews.some((v) => this._normGuid(v.Id) === currentViewId);
+    if (!currentViewIsValid && defaultViewId && currentViewId !== defaultViewId) {
       this.properties.viewId = defaultViewId;
     }
+
+    this._viewsLoadedFor = id;
   }
 
   private async _loadBooleanFields(listId: string): Promise<void> {
@@ -833,6 +975,7 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
     const collapsible = Boolean(this.properties.gridCollapsible);
 
     const listIdNorm = this._normGuid(this.properties.listId);
+    const viewIdNorm = this._normGuid(this.properties.viewId);
     const relatedListIdNorm = this._normGuid(this.properties.relatedListId);
 
     const enableApproveModal = Boolean(this.properties.enableApproveModal);
@@ -913,6 +1056,33 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
               ],
             },
             {
+              groupName: "Filtros",
+              groupFields: [
+                PropertyPaneDropdown("viewId", {
+                  label: "Vista",
+                  options: this._viewOptions,
+                  selectedKey: viewIdNorm,
+                  disabled: !listIdNorm || !this._viewsLoadedFor || this._viewsLoadedFor !== listIdNorm,
+                }),
+                PropertyPaneTextField("viewFilterSnapshotCapturedAt", {
+                  label: "Última captura",
+                  disabled: true,
+                }),
+                PropertyPaneButton("captureViewFilters", {
+                  text: "Configurar filtros de la vista",
+                  buttonType: PropertyPaneButtonType.Primary,
+                  onClick: () => {
+                    this._captureViewFilterSnapshot().catch(() => undefined);
+                  },
+                  disabled:
+                    !listIdNorm ||
+                    !viewIdNorm ||
+                    !this._viewsLoadedFor ||
+                    this._viewsLoadedFor !== listIdNorm,
+                }),
+              ],
+            },
+            {
               groupName: "Acciones",
               groupFields: [
                 PropertyPaneCheckbox("showAdd", {
@@ -960,6 +1130,21 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
                 PropertyPaneTextField("fallbackDateField", {
                   label: "Campo fecha fallback (opcional)",
                   placeholder: "Nombre interno",
+                }),
+                PropertyPaneTextField("semaforoSnapshotCapturedAt", {
+                  label: "Última captura",
+                  disabled: true,
+                }),
+                PropertyPaneButton("captureSemaforoSnapshot", {
+                  text: "Configurar semáforo",
+                  buttonType: PropertyPaneButtonType.Primary,
+                  onClick: () => {
+                    this._captureSemaforoSnapshot().catch(() => undefined);
+                  },
+                  disabled:
+                    !this.properties.enableSemaforo ||
+                    !String(this.properties.tipoConfigListTitle || "").trim() ||
+                    !String(this.properties.tipoConfigKeyField || "").trim(),
                 }),
               ],
             },

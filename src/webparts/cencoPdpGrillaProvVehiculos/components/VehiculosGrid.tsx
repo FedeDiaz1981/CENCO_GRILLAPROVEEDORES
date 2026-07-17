@@ -48,6 +48,7 @@ import {
   isMotivoRequired as isMotivoRequiredHelper,
   shouldShowMotivoModal as shouldShowMotivoModalHelper,
 } from "../utils/flowHelpers";
+import { parseSemaforoSnapshot } from "../utils/semaforoSnapshot";
 
 type RowItem = Record<string, unknown> & {
   id?: number | string;
@@ -389,19 +390,49 @@ const useWindowW = (): number => {
 };
 
 type Semaforo = "Vigente" | "Por vencer" | "Vencido";
+const parseSemaforoDate = (value?: string): Date | undefined => {
+  const text = String(value ?? "").trim();
+  if (!text) return undefined;
+
+  const isoLike =
+    /^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(text);
+  if (isoLike) {
+    const year = Number(isoLike[1]);
+    const month = Number(isoLike[2]);
+    const day = Number(isoLike[3]);
+    const hour = Number(isoLike[4] || 0);
+    const minute = Number(isoLike[5] || 0);
+    const second = Number(isoLike[6] || 0);
+    const date = new Date(year, month - 1, day, hour, minute, second);
+    return Number.isNaN(date.getTime()) ? undefined : date;
+  }
+
+  const latamLike = /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+\d{1,2}:\d{2}(?::(\d{2}))?)?$/.exec(text);
+  if (latamLike) {
+    const day = Number(latamLike[1]);
+    const month = Number(latamLike[2]);
+    const year = Number(latamLike[3]);
+    const date = new Date(year, month - 1, day);
+    return Number.isNaN(date.getTime()) ? undefined : date;
+  }
+
+  const fallback = new Date(text);
+  return Number.isNaN(fallback.getTime()) ? undefined : fallback;
+};
+
 const calcSemaforo = (
   fechaStr?: string,
   warnDays = 30,
   now = new Date()
 ): Semaforo => {
   if (!fechaStr) return "Vencido";
-  const f = new Date(fechaStr);
-  if (Number.isNaN(f.getTime())) return "Vencido";
+  const f = parseSemaforoDate(fechaStr);
+  if (!f) return "Vencido";
   const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const tf = new Date(f.getFullYear(), f.getMonth(), f.getDate()).getTime();
   if (tf < t0) return "Vencido";
-  const diff = Math.ceil((tf - t0) / 86400000);
-  return diff <= warnDays ? "Por vencer" : "Vigente";
+  const daysRemaining = Math.ceil((tf - t0) / 86400000);
+  return daysRemaining <= warnDays ? "Por vencer" : "Vigente";
 };
 
 const semaforoColor = (s: Semaforo): string =>
@@ -457,9 +488,13 @@ type Props = {
   gridTitleFontFamily?: string;
 
   viewSnapshotJson?: string;
+  viewFilterSnapshotJson?: string;
+  semaforoSnapshotJson?: string;
   viewColumnConfigJson?: string;
   columnEditorOpenNonce?: number;
   onCaptureViewSnapshot?: () => Promise<void> | void;
+  onCaptureViewFilterSnapshot?: () => Promise<void> | void;
+  onCaptureSemaforoSnapshot?: () => Promise<void> | void;
   onSaveViewColumnConfig?: (json: string) => Promise<void> | void;
 
   // ===== Aprobación (legacy) =====
@@ -522,6 +557,7 @@ const makeDynCacheKey = (p: {
   service: IVehiculosService;
   instanceKey?: string;
   columnConfigJson?: string;
+  filterConfigJson?: string;
 }): string => {
   const svc = p.service as unknown as {
     listId?: unknown;
@@ -530,9 +566,10 @@ const makeDynCacheKey = (p: {
   };
   const listId = String(svc.listId ?? svc._listId ?? svc.baseListId ?? "");
   const cfgKey = String(p.columnConfigJson ?? "").trim();
+  const filterKey = String(p.filterConfigJson ?? "").trim();
   return `vehiculosGrid:${String(p.instanceKey ?? "global")}:${listId}:${String(p.viewId ?? "")}:${String(
     p.toggleField ?? ""
-  )}:${cfgKey}`;
+  )}:${cfgKey}:${filterKey}`;
 };
 
 const readDynCache = (key: DynCacheKey): DynCacheEntry | undefined => {
@@ -579,8 +616,6 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
     enableSemaforo = false,
     tipoFieldName = "TipoFormularioKey",
-    tipoConfigListTitle = "Tipo formulario",
-    tipoConfigKeyField = "Title",
     defaultWarnDays = 30,
     fallbackDateField,
 
@@ -608,6 +643,8 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     gridTitleFontWeight = "700",
     gridTitleFontFamily = "Segoe UI",
     viewSnapshotJson,
+    viewFilterSnapshotJson,
+    semaforoSnapshotJson,
     viewColumnConfigJson,
     columnEditorOpenNonce,
     onCaptureViewSnapshot,
@@ -648,6 +685,17 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     () => parseViewSnapshot(viewSnapshotJson),
     [viewSnapshotJson]
   );
+  const parsedSemaforoSnapshot = React.useMemo(
+    () => parseSemaforoSnapshot(semaforoSnapshotJson),
+    [semaforoSnapshotJson]
+  );
+  const semaforoDebugEnabled = React.useMemo((): boolean => {
+    try {
+      return window.localStorage.getItem("cncoGridSemaforoDebug") === "1";
+    } catch {
+      return false;
+    }
+  }, []);
   const parsedColumnConfig = React.useMemo(
     () => parseViewColumnConfig(viewColumnConfigJson),
     [viewColumnConfigJson]
@@ -897,8 +945,9 @@ const VehiculosGrid: React.FC<Props> = (props) => {
         toggleField,
         instanceKey,
         columnConfigJson: viewColumnConfigJson || "",
+        filterConfigJson: viewFilterSnapshotJson || "",
       }),
-    [service, viewId, toggleField, instanceKey, viewColumnConfigJson]
+    [service, viewId, toggleField, instanceKey, viewColumnConfigJson, viewFilterSnapshotJson]
   );
 
   React.useEffect(() => {
@@ -1521,6 +1570,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
           }>;
         };
         const viewIdSafe = String(viewId ?? "").trim();
+        const canUseViewPaging = Boolean(viewIdSafe && typeof svcAny.getViewGridPaged === "function");
 
         if (useCustomListMode) {
           const full: {
@@ -1528,7 +1578,17 @@ const VehiculosGrid: React.FC<Props> = (props) => {
             items?: RowItem[];
             nextToken?: string;
           } =
-            typeof svcAny.getListGridPaged === "function"
+            canUseViewPaging
+              ? await svcAny.getViewGridPaged!(
+                  viewIdSafe,
+                  FETCH_BATCH,
+                  opts.initial ? undefined : dynTokenRef.current,
+                  toggleField,
+                  isFiltered ? undefined : sort.field,
+                  isFiltered ? undefined : sort.desc,
+                  { resolveLookups: false }
+                )
+              : typeof svcAny.getListGridPaged === "function"
               ? await svcAny.getListGridPaged!(
                   listId,
                   FETCH_BATCH,
@@ -1537,7 +1597,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
                 )
               : (() => {
                   throw new Error(
-                    "El service no implementa getListGridPaged, necesario para el modo de snapshot personalizado."
+                    "El service no implementa getListGridPaged ni getViewGridPaged, necesario para el modo de snapshot personalizado."
                   );
                 })();
 
@@ -1883,18 +1943,32 @@ const VehiculosGrid: React.FC<Props> = (props) => {
   );
 
   React.useEffect(() => {
-    if (!enableSemaforo || !service.getTipoFormularioConfig) return;
-    let alive = true;
-    service
-      .getTipoFormularioConfig(tipoConfigListTitle, tipoConfigKeyField)
-      .then((m) => {
-        if (alive) setCfg(m || {});
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [enableSemaforo, service, tipoConfigListTitle, tipoConfigKeyField]);
+    if (!enableSemaforo) return;
+
+    if (parsedSemaforoSnapshot?.rules) {
+      setCfg(parsedSemaforoSnapshot.rules || {});
+      if (semaforoDebugEnabled) {
+        // eslint-disable-next-line no-console
+        console.log("[VehiculosGrid] semaforo snapshot loaded", {
+          listTitle: parsedSemaforoSnapshot.listTitle,
+          keyField: parsedSemaforoSnapshot.keyField,
+          rulesCount: Object.keys(parsedSemaforoSnapshot.rules || {}).length,
+          capturedAt: parsedSemaforoSnapshot.capturedAt,
+        });
+      }
+      return;
+    }
+
+    setCfg({});
+    if (semaforoDebugEnabled) {
+      // eslint-disable-next-line no-console
+      console.log("[VehiculosGrid] semaforo snapshot missing; skipping list query");
+    }
+  }, [
+    enableSemaforo,
+    parsedSemaforoSnapshot,
+    semaforoDebugEnabled,
+  ]);
 
   const dynSource = React.useMemo((): RowItem[] | undefined => (isDynMode ? currentDynBuffer : undefined), [
     isDynMode,
@@ -1903,28 +1977,35 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
   const itemsFiltered = React.useMemo(() => {
     const q = qTrim.toLowerCase();
+    const matchesQuery = (row: Record<string, unknown>): boolean => {
+      if (!q) return true;
+      return Object.keys(row).some((k) => stringify(row[k]).toLowerCase().includes(q));
+    };
 
     if (dynSource) {
       const source = isFiltered ? filterSnap ?? currentDynBuffer : currentDynBuffer;
-      if (!q) return source;
-
-      return source.filter((it) => {
-        const obj = it as Record<string, unknown>;
-        return Object.keys(obj).some((k) => stringify(obj[k]).toLowerCase().includes(q));
-      });
+      return source.filter((it) => matchesQuery(it as Record<string, unknown>));
     }
 
-    if (!q) return s.items as Vehiculo[];
     return (s.items as Vehiculo[]).filter((v) => {
       const proveedorTextLocal = (v.proveedorTitles || []).join(", ");
       return (
+        !q ||
         String(v.placa || "").toLowerCase().includes(q) ||
         String(v.marca || "").toLowerCase().includes(q) ||
         String(v.modelo || "").toLowerCase().includes(q) ||
         proveedorTextLocal.toLowerCase().includes(q)
       );
     });
-  }, [dynSource, s.items, qTrim, stringify, isFiltered, filterSnap, currentDynBuffer]);
+  }, [
+    dynSource,
+    s.items,
+    qTrim,
+    stringify,
+    filterSnap,
+    currentDynBuffer,
+    isFiltered,
+  ]);
 
   const itemsFilteredSorted = React.useMemo(() => {
     if (!sort.field) return itemsFiltered;
@@ -1957,8 +2038,9 @@ const VehiculosGrid: React.FC<Props> = (props) => {
   React.useEffect(() => {
     if (!isDynMode) return;
     if (snapshotEnabled) return;
+    if (isFiltered) return;
     loadMoreIfNeeded(pageIndex).catch(() => {});
-  }, [isDynMode, pageIndex, loadMoreIfNeeded, snapshotEnabled]);
+  }, [isDynMode, pageIndex, loadMoreIfNeeded, snapshotEnabled, isFiltered]);
 
   React.useEffect(() => {
     if (!isDynMode) return;
@@ -2674,9 +2756,66 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     const dateField = rule?.dateField || fallbackDateField;
     const warnDays = rule?.warnDays ?? defaultWarnDays;
     const rawDate = dateField ? (it?.[dateField] as string | undefined) : undefined;
+    const parsedDate = rawDate ? parseSemaforoDate(rawDate) : undefined;
+    const daysRemaining = parsedDate
+      ? Math.ceil(
+          (new Date(
+            parsedDate.getFullYear(),
+            parsedDate.getMonth(),
+            parsedDate.getDate()
+          ).getTime() -
+            new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()).getTime()) /
+            86400000
+        )
+      : undefined;
 
     const estado = calcSemaforo(rawDate, warnDays);
     const color = semaforoColor(estado);
+
+    if (semaforoDebugEnabled) {
+      // eslint-disable-next-line no-console
+      console.log("[VehiculosGrid] semaforo row", {
+        tipoFieldName,
+        keyText,
+        rule,
+        dateField,
+        warnDays,
+        rawDate,
+        parsedDate: parsedDate ? parsedDate.toISOString() : undefined,
+        daysRemaining,
+        estado,
+      });
+
+      if (!keyText) {
+        // eslint-disable-next-line no-console
+        console.warn("[VehiculosGrid] semaforo skip: tipo vacío", { tipoFieldName, row: it });
+      } else if (!rule) {
+        // eslint-disable-next-line no-console
+        console.warn("[VehiculosGrid] semaforo skip: no hay regla para el tipo", {
+          tipoFieldName,
+          keyText,
+          availableKeys: Object.keys(cfg || {}),
+          row: it,
+        });
+      } else if (!dateField) {
+        // eslint-disable-next-line no-console
+        console.warn("[VehiculosGrid] semaforo skip: regla sin dateField", {
+          keyText,
+          rule,
+          fallbackDateField,
+          row: it,
+        });
+      } else if (!parsedDate) {
+        // eslint-disable-next-line no-console
+        console.warn("[VehiculosGrid] semaforo skip: fecha inválida", {
+          keyText,
+          dateField,
+          rawDate,
+          rule,
+          row: it,
+        });
+      }
+    }
 
     const dot: React.CSSProperties = {
       display: "inline-block",
@@ -2691,8 +2830,8 @@ const VehiculosGrid: React.FC<Props> = (props) => {
       textAlign: "center",
     };
 
-    const tooltip = rawDate
-      ? `${estado} — vence: ${new Date(rawDate).toLocaleDateString()}`
+    const tooltip = parsedDate
+      ? `${estado} — vence: ${parsedDate.toLocaleDateString()}`
       : estado;
 
     return (
@@ -3718,6 +3857,8 @@ const VehiculosGrid: React.FC<Props> = (props) => {
                           )}
                         </Stack>
                       );
+                    } else if (col.key === "semaforo") {
+                      content = renderSemaforo(row);
                     } else if (isEditing && col.onRender) {
                       content = col.onRender(row, rowIndex, col);
                     } else {
