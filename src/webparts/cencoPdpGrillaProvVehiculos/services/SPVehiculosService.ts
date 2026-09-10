@@ -1317,6 +1317,12 @@ export class SPVehiculosService implements IVehiculosService {
   ): Promise<void> {
     const list = this.sp.web.lists.getById(listId);
     const bodyObj: Record<string, unknown> = {};
+    const dateWitnesses: Array<{
+      internalName: string;
+      title: string;
+      expected?: string;
+      submittedDate?: Date;
+    }> = [];
 
     for (const s of schema) {
       if (!(s.internalName in values) || s.readOnly) continue;
@@ -1379,13 +1385,21 @@ export class SPVehiculosService implements IVehiculosService {
           bodyObj[n] = Number.isNaN(num) ? undefined : num;
         }
       } else if (s.type === "DateTime") {
-        bodyObj[n] = this.parseDateFlexible(val);
+        const parsedDate = this.parseDateFlexible(val);
+        bodyObj[n] = parsedDate;
+        dateWitnesses.push({
+          internalName: n,
+          title: s.title || n,
+          expected: this.dateOnlyKeyFromInput(val),
+          submittedDate: parsedDate,
+        });
       } else {
         bodyObj[n] = val;
       }
     }
 
     await list.items.getById(id).update(bodyObj);
+    await this.correctDateWitnesses(list, id, dateWitnesses);
   }
 
   // ============================================================
@@ -1475,7 +1489,7 @@ export class SPVehiculosService implements IVehiculosService {
       const y = Number(m1[1]);
       const mo = Number(m1[2]);
       const d = Number(m1[3]);
-      const dt = new Date(Date.UTC(y, mo - 1, d));
+      const dt = new Date(Date.UTC(y, mo - 1, d, 12, 0, 0));
       return Number.isNaN(dt.getTime()) ? undefined : dt;
     }
 
@@ -1485,12 +1499,164 @@ export class SPVehiculosService implements IVehiculosService {
       const d = Number(m2[1]);
       const mo = Number(m2[2]);
       const y = Number(m2[3]);
-      const dt = new Date(Date.UTC(y, mo - 1, d));
+      const dt = new Date(Date.UTC(y, mo - 1, d, 12, 0, 0));
       return Number.isNaN(dt.getTime()) ? undefined : dt;
     }
 
     const dt = new Date(s);
     return Number.isNaN(dt.getTime()) ? undefined : dt;
+  }
+
+  private dateOnlyKeyFromInput(val: unknown): string | undefined {
+    if (val === undefined || val === null || val === "") return undefined;
+
+    if (val instanceof Date) {
+      return this.dateOnlyKeyFromDate(val);
+    }
+
+    const s = String(val).trim();
+    if (!s) return undefined;
+
+    const isoShort = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+    if (isoShort) return `${isoShort[1]}-${isoShort[2]}-${isoShort[3]}`;
+
+    const latam = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(s);
+    if (latam) {
+      const day = Number(latam[1]);
+      const month = Number(latam[2]);
+      const year = Number(latam[3]);
+      return this.dateOnlyKeyFromParts(year, month, day);
+    }
+
+    const parsed = new Date(s);
+    return Number.isNaN(parsed.getTime()) ? undefined : this.dateOnlyKeyFromDate(parsed);
+  }
+
+  private dateOnlyKeyFromStored(val: unknown): string | undefined {
+    if (val === undefined || val === null || val === "") return undefined;
+
+    if (val instanceof Date) {
+      return this.dateOnlyKeyFromDate(val);
+    }
+
+    const text = String(val).trim();
+    const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+    if (dateOnly) return `${dateOnly[1]}-${dateOnly[2]}-${dateOnly[3]}`;
+
+    const parsed = new Date(text);
+    return Number.isNaN(parsed.getTime()) ? undefined : this.dateOnlyKeyFromDate(parsed);
+  }
+
+  private dateOnlyKeyFromDate(date: Date): string | undefined {
+    if (Number.isNaN(date.getTime())) return undefined;
+    return this.dateOnlyKeyFromParts(date.getFullYear(), date.getMonth() + 1, date.getDate());
+  }
+
+  private dateOnlyKeyFromParts(year: number, month: number, day: number): string | undefined {
+    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+      return undefined;
+    }
+
+    const mm = month < 10 ? `0${month}` : String(month);
+    const dd = day < 10 ? `0${day}` : String(day);
+    return `${year}-${mm}-${dd}`;
+  }
+
+  private formatDateKeyForMessage(value?: string): string {
+    if (!value) return "(vacio)";
+    const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    return parts ? `${parts[3]}/${parts[2]}/${parts[1]}` : value;
+  }
+
+  private dayNumberFromDateKey(value?: string): number | undefined {
+    const parts = value ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(value) : undefined;
+    if (!parts) return undefined;
+
+    const year = Number(parts[1]);
+    const month = Number(parts[2]);
+    const day = Number(parts[3]);
+    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+      return undefined;
+    }
+
+    return Math.floor(Date.UTC(year, month - 1, day) / 86400000);
+  }
+
+  private dateFromDateKeyAtUtcNoon(value?: string): Date | undefined {
+    const parts = value ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(value) : undefined;
+    if (!parts) return undefined;
+
+    const year = Number(parts[1]);
+    const month = Number(parts[2]);
+    const day = Number(parts[3]);
+    const date = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+    return Number.isNaN(date.getTime()) ? undefined : date;
+  }
+
+  private addUtcDays(date: Date, days: number): Date {
+    return new Date(date.getTime() + days * 86400000);
+  }
+
+  private async correctDateWitnesses(
+    list: IList,
+    id: number,
+    witnesses: Array<{ internalName: string; title: string; expected?: string; submittedDate?: Date }>
+  ): Promise<void> {
+    if (!witnesses.length) return;
+
+    const fields = Array.from(new Set(witnesses.map((w) => w.internalName)));
+    const saved = (await list.items.getById(id).select(...fields)()) as Record<string, unknown>;
+
+    const mismatches = witnesses
+      .map((w) => ({
+        ...w,
+        actual: this.dateOnlyKeyFromStored(saved[w.internalName]),
+      }))
+      .filter((w) => Boolean(w.expected) && Boolean(w.actual) && w.expected !== w.actual);
+
+    if (!mismatches.length) return;
+
+    const correction: Record<string, unknown> = {};
+
+    for (const w of mismatches) {
+      const expectedDay = this.dayNumberFromDateKey(w.expected);
+      const actualDay = this.dayNumberFromDateKey(w.actual);
+      const baseDate = w.submittedDate || this.dateFromDateKeyAtUtcNoon(w.expected);
+
+      if (expectedDay === undefined || actualDay === undefined || !baseDate) continue;
+
+      const deltaDays = expectedDay - actualDay;
+      correction[w.internalName] = this.addUtcDays(baseDate, deltaDays);
+
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[SPVehiculosService] Fecha corregida tras guardar: ${w.title}. ` +
+          `Ingresada ${this.formatDateKeyForMessage(w.expected)}, ` +
+          `SharePoint devolvio ${this.formatDateKeyForMessage(w.actual)}. ` +
+          `Se reintenta ajustando ${deltaDays} dia(s).`
+      );
+    }
+
+    if (!Object.keys(correction).length) return;
+
+    await list.items.getById(id).update(correction);
+
+    const checked = (await list.items.getById(id).select(...fields)()) as Record<string, unknown>;
+    for (const w of mismatches) {
+      const actual = this.dateOnlyKeyFromStored(checked[w.internalName]);
+      const message =
+        `[SPVehiculosService] Validacion posterior: ${w.title}. ` +
+        `Esperada ${this.formatDateKeyForMessage(w.expected)}, ` +
+        `guardada ${this.formatDateKeyForMessage(actual)}.`;
+
+      if (actual === w.expected) {
+        // eslint-disable-next-line no-console
+        console.info(`${message} Correccion aplicada.`);
+      } else {
+        // eslint-disable-next-line no-console
+        console.warn(`${message} La correccion no pudo dejar la fecha esperada.`);
+      }
+    }
   }
 
   private buildEqCaml(

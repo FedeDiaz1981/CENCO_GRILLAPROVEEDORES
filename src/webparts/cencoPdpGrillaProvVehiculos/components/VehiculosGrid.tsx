@@ -139,6 +139,36 @@ const ensureSharedStyles = (): () => void => {
       flex-wrap:wrap;
     }
 
+    .cnco-vehiculos-shell .cnco-toolbar-actions,
+    .cnco-vehiculos-shell .cnco-filter-row{
+      width:100%;
+    }
+
+    .cnco-vehiculos-shell .cnco-semaforo-filter{
+      min-width:170px;
+      display:flex;
+      flex-direction:column;
+      gap:4px;
+    }
+
+    .cnco-vehiculos-shell .cnco-filter-label{
+      color:#605e5c;
+      font-size:12px;
+      font-weight:600;
+      line-height:16px;
+    }
+
+    .cnco-vehiculos-shell .cnco-semaforo-filter .ms-Dropdown-title{
+      border:1px solid #d0d7de;
+      border-radius:8px;
+      box-shadow:0 1px 3px rgba(0,0,0,.06);
+      font-weight:600;
+    }
+
+    .cnco-vehiculos-shell .cnco-semaforo-filter .ms-Dropdown:hover .ms-Dropdown-title{
+      border-color:#1e88e5;
+    }
+
     .cnco-vehiculos-shell .ms-SearchBox{max-width:320px}
     .cnco-vehiculos-shell .ms-SearchBox-field{
       height:32px!important;
@@ -390,6 +420,18 @@ const useWindowW = (): number => {
 };
 
 type Semaforo = "Vigente" | "Por vencer" | "Vencido";
+type SemaforoFilter = "all" | Semaforo;
+type SemaforoInfo = {
+  estado: Semaforo;
+  color: string;
+  keyText: string;
+  rule?: { dateField: string; warnDays: number };
+  dateField?: string;
+  warnDays: number;
+  rawDate?: string;
+  parsedDate?: Date;
+  daysRemaining?: number;
+};
 const parseSemaforoDate = (value?: string): Date | undefined => {
   const text = String(value ?? "").trim();
   if (!text) return undefined;
@@ -1112,6 +1154,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
           const rowCache = { ...(cache[String(rowId)] || {}) };
           for (const meta of lookupMetas) {
+            // eslint-disable-next-line @typescript-eslint/no-use-before-define
             const text = renderCellText((row as Record<string, unknown>)[meta.internalName]).trim();
             if (text && text !== "[object Object]") {
               rowCache[meta.internalName.toLowerCase()] = text;
@@ -1189,28 +1232,40 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     [unwrapResults]
   );
 
+  const htmlToPlainText = React.useCallback((input: unknown): string => {
+    const sVal = String(input ?? "");
+
+    if (
+      !/[<>]/.test(sVal) ||
+      (!sVal.includes("<div") &&
+        !sVal.includes("<p") &&
+        !sVal.includes("<br") &&
+        !sVal.includes("</"))
+    ) {
+      return sVal;
+    }
+
+    if (typeof document === "undefined") {
+      return sVal
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<\/(?:div|p|li|tr|h[1-6])>/gi, "\n")
+        .replace(/<[^>]+>/g, "")
+        .replace(/\u00a0/g, " ")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    }
+
+    const el = document.createElement("div");
+    el.innerHTML = sVal
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(?:div|p|li|tr|h[1-6])>/gi, "\n");
+    const txt = el.textContent || (el as HTMLElement).innerText || "";
+    return txt.replace(/\u00a0/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  }, []);
+
   const renderCellText = React.useCallback(
     (v: unknown): string => {
       if (v === undefined || v === null) return "";
-
-      const htmlToText = (input: unknown): string => {
-        const sVal = String(input ?? "");
-
-        if (
-          !/[<>]/.test(sVal) ||
-          (!sVal.includes("<div") &&
-            !sVal.includes("<p") &&
-            !sVal.includes("<br") &&
-            !sVal.includes("</"))
-        ) {
-          return sVal;
-        }
-
-        const el = document.createElement("div");
-        el.innerHTML = sVal;
-        const txt = el.textContent || (el as HTMLElement).innerText || "";
-        return txt.replace(/\u00a0/g, " ").trim();
-      };
 
       const unwrapped = unwrapResults(v);
 
@@ -1221,18 +1276,18 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
             if (xu && typeof xu === "object") {
               const o = xu as Record<string, unknown>;
-              if ("Title" in o) return htmlToText(o.Title);
-              if ("title" in o) return htmlToText(o.title);
-              if ("text" in o) return htmlToText(o.text);
-              if ("Name" in o) return htmlToText(o.Name);
-              if ("Email" in o) return htmlToText(o.Email);
-              if ("EMail" in o) return htmlToText(o.EMail);
-              if ("LoginName" in o) return htmlToText(o.LoginName);
-              if ("Id" in o) return htmlToText(o.Id);
-              if ("ID" in o) return htmlToText(o.ID);
+              if ("Title" in o) return htmlToPlainText(o.Title);
+              if ("title" in o) return htmlToPlainText(o.title);
+              if ("text" in o) return htmlToPlainText(o.text);
+              if ("Name" in o) return htmlToPlainText(o.Name);
+              if ("Email" in o) return htmlToPlainText(o.Email);
+              if ("EMail" in o) return htmlToPlainText(o.EMail);
+              if ("LoginName" in o) return htmlToPlainText(o.LoginName);
+              if ("Id" in o) return htmlToPlainText(o.Id);
+              if ("ID" in o) return htmlToPlainText(o.ID);
             }
 
-            return htmlToText(xu ?? "");
+            return htmlToPlainText(xu ?? "");
           })
           .filter((s) => String(s).trim() !== "")
           .join(", ");
@@ -1240,24 +1295,24 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
       if (typeof unwrapped === "object") {
         const o = unwrapped as Record<string, unknown>;
-        if ("Title" in o) return htmlToText(o.Title);
-        if ("title" in o) return htmlToText(o.title);
-        if ("text" in o) return htmlToText(o.text);
-        if ("Name" in o) return htmlToText(o.Name);
-        if ("Email" in o) return htmlToText(o.Email);
-        if ("EMail" in o) return htmlToText(o.EMail);
-        if ("LoginName" in o) return htmlToText(o.LoginName);
-        if ("Id" in o) return htmlToText(o.Id);
-        if ("ID" in o) return htmlToText(o.ID);
+        if ("Title" in o) return htmlToPlainText(o.Title);
+        if ("title" in o) return htmlToPlainText(o.title);
+        if ("text" in o) return htmlToPlainText(o.text);
+        if ("Name" in o) return htmlToPlainText(o.Name);
+        if ("Email" in o) return htmlToPlainText(o.Email);
+        if ("EMail" in o) return htmlToPlainText(o.EMail);
+        if ("LoginName" in o) return htmlToPlainText(o.LoginName);
+        if ("Id" in o) return htmlToPlainText(o.Id);
+        if ("ID" in o) return htmlToPlainText(o.ID);
 
-        return htmlToText(stringify(unwrapped));
+        return htmlToPlainText(stringify(unwrapped));
       }
 
-      if (typeof unwrapped === "string") return htmlToText(unwrapped);
+      if (typeof unwrapped === "string") return htmlToPlainText(unwrapped);
 
-      return htmlToText(unwrapped);
+      return htmlToPlainText(unwrapped);
     },
-    [stringify, unwrapResults]
+    [htmlToPlainText, stringify, unwrapResults]
   );
 
   // IDs extractor SIN flatMap
@@ -1347,6 +1402,27 @@ const VehiculosGrid: React.FC<Props> = (props) => {
       return `${day}/${month}/${parsed.getFullYear()}`;
     },
     [parseDateForDisplay, renderCellText]
+  );
+
+  const formatDateInputValue = React.useCallback(
+    (value: unknown): string => {
+      if (value === undefined || value === null || value === "") return "";
+
+      const text = String(value).trim();
+      const isoDate = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
+      if (isoDate) return `${isoDate[1]}-${isoDate[2]}-${isoDate[3]}`;
+
+      const parsed = parseDateForDisplay(value);
+      if (!parsed) return "";
+
+      const month =
+        parsed.getMonth() + 1 < 10
+          ? `0${parsed.getMonth() + 1}`
+          : String(parsed.getMonth() + 1);
+      const day = parsed.getDate() < 10 ? `0${parsed.getDate()}` : String(parsed.getDate());
+      return `${parsed.getFullYear()}-${month}-${day}`;
+    },
+    [parseDateForDisplay]
   );
 
   const trimCalculatedDecimals = React.useCallback(
@@ -1505,8 +1581,19 @@ const VehiculosGrid: React.FC<Props> = (props) => {
   );
 
   const [query, setQuery] = React.useState("");
+  const [semaforoFilter, setSemaforoFilter] = React.useState<SemaforoFilter>("all");
   const qTrim = query.trim();
-  const isFiltered = qTrim.length > 0;
+  const semaforoFilterActive = enableSemaforo && semaforoFilter !== "all";
+  const isFiltered = qTrim.length > 0 || semaforoFilterActive;
+  const semaforoFilterOptions = React.useMemo<IDropdownOption[]>(
+    () => [
+      { key: "all", text: "Todos los colores" },
+      { key: "Vigente", text: "Verde - Vigente" },
+      { key: "Por vencer", text: "Amarillo - Por vencer" },
+      { key: "Vencido", text: "Rojo - Vencido" },
+    ],
+    []
+  );
 
   const [filterSnap, setFilterSnap] = React.useState<RowItem[] | null>(null);
 
@@ -1643,6 +1730,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
           setDynNextToken(full.nextToken);
 
           dynLenRef.current = newItems.length;
+          // eslint-disable-next-line require-atomic-updates
           dynTokenRef.current = full.nextToken;
 
           if (opts.initial) {
@@ -1970,6 +2058,46 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     semaforoDebugEnabled,
   ]);
 
+  const getSemaforoInfo = React.useCallback(
+    (it: RowItem): SemaforoInfo => {
+      const keyText = String(it?.[tipoFieldName] ?? "").trim().toLowerCase();
+      const rule = keyText ? cfg[keyText] : undefined;
+      const dateField = rule?.dateField || fallbackDateField;
+      const warnDays = rule?.warnDays ?? defaultWarnDays;
+      const rawDate = dateField ? (it?.[dateField] as string | undefined) : undefined;
+      const parsedDate = rawDate ? parseSemaforoDate(rawDate) : undefined;
+      const daysRemaining = parsedDate
+        ? Math.ceil(
+            (new Date(
+              parsedDate.getFullYear(),
+              parsedDate.getMonth(),
+              parsedDate.getDate()
+            ).getTime() -
+              new Date(
+                new Date().getFullYear(),
+                new Date().getMonth(),
+                new Date().getDate()
+              ).getTime()) /
+              86400000
+          )
+        : undefined;
+      const estado = calcSemaforo(rawDate, warnDays);
+
+      return {
+        estado,
+        color: semaforoColor(estado),
+        keyText,
+        rule,
+        dateField,
+        warnDays,
+        rawDate,
+        parsedDate,
+        daysRemaining,
+      };
+    },
+    [cfg, defaultWarnDays, fallbackDateField, tipoFieldName]
+  );
+
   const dynSource = React.useMemo((): RowItem[] | undefined => (isDynMode ? currentDynBuffer : undefined), [
     isDynMode,
     currentDynBuffer,
@@ -1981,21 +2109,26 @@ const VehiculosGrid: React.FC<Props> = (props) => {
       if (!q) return true;
       return Object.keys(row).some((k) => stringify(row[k]).toLowerCase().includes(q));
     };
+    const matchesSemaforo = (row: RowItem): boolean =>
+      !semaforoFilterActive || getSemaforoInfo(row).estado === semaforoFilter;
 
     if (dynSource) {
       const source = isFiltered ? filterSnap ?? currentDynBuffer : currentDynBuffer;
-      return source.filter((it) => matchesQuery(it as Record<string, unknown>));
+      return source.filter(
+        (it) => matchesQuery(it as Record<string, unknown>) && matchesSemaforo(it)
+      );
     }
 
     return (s.items as Vehiculo[]).filter((v) => {
       const proveedorTextLocal = (v.proveedorTitles || []).join(", ");
-      return (
+      const row = v as unknown as RowItem;
+      const textMatches =
         !q ||
         String(v.placa || "").toLowerCase().includes(q) ||
         String(v.marca || "").toLowerCase().includes(q) ||
         String(v.modelo || "").toLowerCase().includes(q) ||
-        proveedorTextLocal.toLowerCase().includes(q)
-      );
+        proveedorTextLocal.toLowerCase().includes(q);
+      return matchesSemaforo(row) && textMatches;
     });
   }, [
     dynSource,
@@ -2005,6 +2138,9 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     filterSnap,
     currentDynBuffer,
     isFiltered,
+    semaforoFilter,
+    semaforoFilterActive,
+    getSemaforoInfo,
   ]);
 
   const itemsFilteredSorted = React.useMemo(() => {
@@ -2097,6 +2233,21 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     Array<{ name: string; serverRelativeUrl: string }>
   >([]);
   const [relEditNewFile, setRelEditNewFile] = React.useState<File | undefined>(undefined);
+
+  const normalizeRelatedEditValues = React.useCallback(
+    (values: Record<string, unknown>, schema: EditField[]): Record<string, unknown> => {
+      const next: Record<string, unknown> = { ...values };
+
+      schema
+        .filter((f) => f.type === "Note")
+        .forEach((f) => {
+          next[f.internalName] = htmlToPlainText(next[f.internalName]);
+        });
+
+      return next;
+    },
+    [htmlToPlainText]
+  );
 
   // =======================
   // ✅ Aprobación unificada + WF complemento
@@ -2682,13 +2833,13 @@ const VehiculosGrid: React.FC<Props> = (props) => {
         const atts = await service.listAttachments(relEditListId, itemId);
 
         setRelEditLookups(lookupMap);
-        setRelEditValues(values as Record<string, unknown>);
+        setRelEditValues(normalizeRelatedEditValues(values as Record<string, unknown>, schema));
         setRelEditAttachments(atts);
       } finally {
         setRelEditLoading(false);
       }
     },
-    [allowRelatedEdit, relEditListId, relatedEditViewId, service]
+    [allowRelatedEdit, relEditListId, normalizeRelatedEditValues, relatedEditViewId, service]
   );
 
   const proveedorText = React.useCallback(
@@ -2751,26 +2902,8 @@ const VehiculosGrid: React.FC<Props> = (props) => {
   };
 
   const renderSemaforo = (it: RowItem): JSX.Element => {
-    const keyText = String(it?.[tipoFieldName] ?? "").trim().toLowerCase();
-    const rule = keyText ? cfg[keyText] : undefined;
-    const dateField = rule?.dateField || fallbackDateField;
-    const warnDays = rule?.warnDays ?? defaultWarnDays;
-    const rawDate = dateField ? (it?.[dateField] as string | undefined) : undefined;
-    const parsedDate = rawDate ? parseSemaforoDate(rawDate) : undefined;
-    const daysRemaining = parsedDate
-      ? Math.ceil(
-          (new Date(
-            parsedDate.getFullYear(),
-            parsedDate.getMonth(),
-            parsedDate.getDate()
-          ).getTime() -
-            new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()).getTime()) /
-            86400000
-        )
-      : undefined;
-
-    const estado = calcSemaforo(rawDate, warnDays);
-    const color = semaforoColor(estado);
+    const { estado, color, keyText, rule, dateField, warnDays, rawDate, parsedDate, daysRemaining } =
+      getSemaforoInfo(it);
 
     if (semaforoDebugEnabled) {
       // eslint-disable-next-line no-console
@@ -3175,11 +3308,10 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
             if (t === "DateTime") {
               const draft = (s.draft as unknown as Record<string, unknown>)?.[fieldName];
-              const val = draft
-                ? String(draft).substring(0, 10)
-                : rawVal
-                ? String(rawVal).substring(0, 10)
-                : "";
+              const val =
+                draft !== undefined && draft !== null
+                  ? formatDateInputValue(draft)
+                  : formatDateInputValue(rawVal);
 
               return (
                 <TextField
@@ -3219,6 +3351,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     extractIds,
     unwrapResults,
     customGridMode,
+    formatDateInputValue,
   ]);
 
   // ✅ acciones: ahora solo 2 (aprobar/rechazar) si canApprove
@@ -3922,7 +4055,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
             <>
               <Stack horizontal wrap horizontalAlign="space-between" className={classes.toolbar}>
                 <Stack
-                  className={classes.responsiveRow}
+                  className={`${classes.responsiveRow} cnco-toolbar-actions`}
                   horizontal
                   wrap
                   tokens={{ childrenGap: 8 }}
@@ -3936,15 +4069,47 @@ const VehiculosGrid: React.FC<Props> = (props) => {
                   )}
                 </Stack>
 
-                <Stack className={classes.responsiveRow} horizontalAlign="end">
+                <Stack
+                  className={`${classes.responsiveRow} cnco-filter-row`}
+                  horizontal
+                  wrap
+                  horizontalAlign={enableSemaforo ? "space-between" : "end"}
+                  verticalAlign="end"
+                  tokens={{ childrenGap: 8 }}
+                >
+                  {enableSemaforo && (
+                    <div className="cnco-semaforo-filter">
+                      <span className="cnco-filter-label">Filtrar semáforo</span>
+                      <Dropdown
+                        ariaLabel="Filtrar semaforo"
+                        options={semaforoFilterOptions}
+                        selectedKey={semaforoFilter}
+                        onChange={(_, opt) => {
+                          setSemaforoFilter((opt?.key as SemaforoFilter | undefined) ?? "all");
+                          setPageIndex(0);
+                        }}
+                        styles={{
+                          root: { minWidth: isMobile ? "100%" : 170 },
+                          dropdown: { height: 34 },
+                          title: { height: 34, lineHeight: "32px" },
+                        }}
+                      />
+                    </div>
+                  )}
                   <SearchBox
                     placeholder="Buscar…"
                     underlined
                     value={query}
                     onChange={(_, v) => {
-                      if (v !== undefined) setQuery(v);
+                      if (v !== undefined) {
+                        setQuery(v);
+                        setPageIndex(0);
+                      }
                     }}
-                    onClear={() => setQuery("")}
+                    onClear={() => {
+                      setQuery("");
+                      setPageIndex(0);
+                    }}
                     styles={{ root: { minWidth: isMobile ? "100%" : 320 } }}
                   />
                 </Stack>
@@ -4522,7 +4687,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
                             key={f.internalName}
                             label={f.title}
                             type="date"
-                            value={val ? String(val).substring(0, 10) : ""}
+                            value={formatDateInputValue(val)}
                             onChange={(_, v) =>
                               setRelEditValues((prev) => ({
                                 ...prev,
@@ -4597,18 +4762,21 @@ const VehiculosGrid: React.FC<Props> = (props) => {
                         );
                       }
 
+                      const isMultilineText = f.type === "Note";
                       return (
                         <TextField
                           key={f.internalName}
                           label={f.title}
                           value={val !== undefined && val !== null ? String(val) : ""}
+                          multiline={isMultilineText}
+                          autoAdjustHeight={isMultilineText}
                           onChange={(_, v) =>
                             setRelEditValues((prev) => ({
                               ...prev,
                               [f.internalName]: v ?? "",
                             }))
                           }
-                          styles={{ root: { marginBottom: 10 } }}
+                          styles={{ root: { marginBottom: 10 }, field: { minHeight: isMultilineText ? 70 : undefined } }}
                         />
                       );
                     })}
@@ -4734,6 +4902,9 @@ const VehiculosGrid: React.FC<Props> = (props) => {
                           setRelEditItemId(undefined);
                           setRelEditAttachments([]);
                           setRelEditNewFile(undefined);
+                        } catch (e) {
+                          // eslint-disable-next-line no-console
+                          console.error("Error guardando documento relacionado", e);
                         } finally {
                           setRelEditSaving(false);
                         }
