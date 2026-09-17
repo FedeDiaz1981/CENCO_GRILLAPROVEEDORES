@@ -83,6 +83,8 @@ export interface ICencoPdpGrillaProvVehiculosWebPartProps {
 
   // ===== UI =====
   gridTitle?: string;
+  gridFullWidth?: boolean;
+  gridWidthPercent?: number;
   gridCollapsible?: boolean;
   gridDefaultCollapsed?: boolean;
   gridLazyLoad?: boolean;
@@ -237,6 +239,8 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
 
     // ===== Defaults UI =====
     this.properties.gridTitle ??= "";
+    this.properties.gridFullWidth ??= false;
+    this.properties.gridWidthPercent ??= 100;
     this.properties.gridCollapsible ??= false;
     this.properties.gridDefaultCollapsed ??= false;
     this.properties.gridLazyLoad ??= true;
@@ -321,6 +325,8 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
 
       // ===== UI =====
       gridTitle = "",
+      gridFullWidth = false,
+      gridWidthPercent = 100,
       gridCollapsible = false,
       gridDefaultCollapsed = false,
       gridLazyLoad = true,
@@ -370,6 +376,8 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
 
           // ✅ UI (título + colapsable)
           gridTitle,
+          gridFullWidth,
+          gridWidthPercent,
           gridCollapsible,
           gridDefaultCollapsed,
 
@@ -808,6 +816,8 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
 
       // UI
       "gridTitle",
+      "gridFullWidth",
+      "gridWidthPercent",
       "gridCollapsible",
       "gridDefaultCollapsed",
 
@@ -995,6 +1005,17 @@ export default class CencoPdpGrillaProvVehiculosWebPart extends BaseClientSideWe
                 PropertyPaneTextField("gridTitle", {
                   label: "Título de la grilla",
                   placeholder: "Ej: Vehículos",
+                }),
+                PropertyPaneCheckbox("gridFullWidth", {
+                  text: "Ocupar todo el ancho de la pantalla",
+                }),
+                PropertyPaneSlider("gridWidthPercent", {
+                  label: "Ancho personalizado (%)",
+                  min: 60,
+                  max: 200,
+                  step: 5,
+                  value: this.properties.gridWidthPercent ?? 100,
+                  disabled: !this.properties.gridFullWidth,
                 }),
 
                 // ===== Estilo título =====

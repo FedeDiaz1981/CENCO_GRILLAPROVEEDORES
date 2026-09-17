@@ -127,8 +127,25 @@ const ensureSharedStyles = (): () => void => {
     th:hover { background-color: transparent !important; }
     div[role=columnheader]:hover { background-color: transparent !important; }
 
-    .cnco-vehiculos-shell{box-sizing:border-box;width:100%}
+    .cnco-vehiculos-shell{box-sizing:border-box;width:100%;max-width:100%;min-width:0}
     .cnco-vehiculos-shell *,.cnco-vehiculos-shell *::before,.cnco-vehiculos-shell *::after{box-sizing:inherit}
+
+    .cnco-vehiculos-shell.cnco-full-width{
+      position:relative;
+      left:50%;
+      width:min(var(--cnco-grid-width, 100%), calc(100vw - 32px));
+      max-width:calc(100vw - 32px);
+      margin-left:0;
+      margin-right:0;
+      transform:translateX(-50%);
+    }
+
+    .cnco-vehiculos-shell .ms-Stack,
+    .cnco-vehiculos-shell .ms-DetailsList,
+    .cnco-vehiculos-shell .ms-DetailsList-contentWrapper{
+      max-width:100%;
+      min-width:0;
+    }
 
     .cnco-vehiculos-shell .cnco-toolbar{
       width:100%;
@@ -177,6 +194,9 @@ const ensureSharedStyles = (): () => void => {
     }
 
     .cnco-vehiculos-shell .cnco-list-wrapper{
+      width:100%;
+      max-width:100%;
+      min-width:0;
       border-radius:12px;
       overflow:hidden;
       background:#fff;
@@ -520,6 +540,8 @@ type Props = {
 
   // ===== UI: título + colapsable =====
   gridTitle?: string;
+  gridFullWidth?: boolean;
+  gridWidthPercent?: number;
   gridCollapsible?: boolean;
   gridDefaultCollapsed?: boolean;
 
@@ -676,6 +698,8 @@ const VehiculosGrid: React.FC<Props> = (props) => {
 
     // ===== UI: título + colapsable =====
     gridTitle = "",
+    gridFullWidth = false,
+    gridWidthPercent = 100,
     gridCollapsible = false,
     gridDefaultCollapsed = false,
 
@@ -826,6 +850,17 @@ const VehiculosGrid: React.FC<Props> = (props) => {
       fontFamily: (gridTitleFontFamily || "Segoe UI").trim(),
     };
   }, [gridTitleFontSize, gridTitleColor, gridTitleFontWeight, gridTitleFontFamily]);
+  const shellClassName = React.useMemo(
+    () => `cnco-vehiculos-shell${gridFullWidth ? " cnco-full-width" : ""}`,
+    [gridFullWidth]
+  );
+  const shellStyle = React.useMemo(() => {
+    const raw = Number(gridWidthPercent);
+    const safe = Number.isFinite(raw) ? Math.max(60, Math.min(200, raw)) : 100;
+    return {
+      "--cnco-grid-width": `${safe}%`,
+    } as React.CSSProperties & Record<string, string>;
+  }, [gridWidthPercent]);
 
   // ====== SORT state ======
   const [sort, setSort] = React.useState<SortState>({
@@ -3757,7 +3792,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
   // ================= render =================
   if ((s.loading && !isDynMode) || (isDynMode && dynLoading && currentDynBuffer.length === 0)) {
     return (
-      <div className="cnco-vehiculos-shell">
+      <div className={shellClassName} style={shellStyle}>
         <ThemeProvider theme={appTheme}>
           <ShimmeredDetailsList
             enableShimmer
@@ -4025,7 +4060,7 @@ const VehiculosGrid: React.FC<Props> = (props) => {
     });
 
   return (
-    <div className="cnco-vehiculos-shell" ref={shellRef}>
+    <div className={shellClassName} ref={shellRef} style={shellStyle}>
       <ThemeProvider theme={appTheme}>
         <Stack tokens={{ childrenGap: 12 }}>
           {/* ✅ Título visible + colapsable */}
